@@ -36,14 +36,17 @@ It follows these specifications:
 .. [RISC-V-UNPRIV] RISC-V Instruction Set Manual, Volume I: User-Level ISA, Document Version 20191213 (December 13, 2019),
    https://github.com/riscv/riscv-isa-manual/releases/download/Ratified-IMAFDQC/riscv-spec-20191213.pdf
 
-.. [RISC-V-PRIV] RISC-V Instruction Set Manual, Volume II: Privileged Architecture, Document Version 20211105-signoff (November 5, 2021),
-   https://github.com/riscv/riscv-isa-manual/releases/download/draft-20211105-c30284b/riscv-privileged.pdf
+.. [RISC-V-PRIV] RISC-V Instruction Set Manual, Volume II: Privileged Architecture, Document Version 20211203 (December 4, 2021),
+   https://github.com/riscv/riscv-isa-manual/releases/download/Priv-v1.12/riscv-privileged-20211203.pdf
 
-.. [RISC-V-DEBUG] RISC-V Debug Support, version 1.0.0-STABLE, 9dc1ee4e4653730f1b318731f9ea8e97f116670a,
-   https://github.com/riscv/riscv-debug-spec/blob/14a8d628e1fb736043eb54e0596adddb9717f0de/riscv-debug-stable.pdf
+.. [RISC-V-RV32E] RISC-V Instruction Set Manual, Volume I: User-Level ISA, RV32E Base Integer Instruction Set, Document version 20191214-draft (January 31, 2023),
+   https://github.com/riscv/riscv-isa-manual/releases/download/draft-20230131-c0b298a/riscv-spec.pdf
 
-.. [RISC-V-SMCLIC] "Smclic" Core-Local Interrupt Controller (CLIC) RISC-V Privileged Architecture Extension, version 0.9-draft, 9/27/2022,
-   https://github.com/riscv/riscv-fast-interrupt/blob/2749a7b7adb01fc308173441b8a6131a5d128f20/clic.pdf
+.. [RISC-V-DEBUG] RISC-V Debug Support, version 1.0-STABLE, f5b2ed3bb0eefcca075e99f3a8eece06e8d60063, October 12 2023,
+   https://github.com/riscv/riscv-debug-spec/blob/51f5a29c0126d69f314079fb4f1197876aca7622/riscv-debug-stable.pdf
+
+.. [RISC-V-CLIC] Core-Local Interrupt Controller (CLIC) RISC-V Privileged Architecture Extensions, version 0.9-draft, 9/1/2023,
+   https://github.com/riscv/riscv-fast-interrupt/blob/894a16ce89dcf2c084dd951866448c2e756d3efa/clic.pdf
 
 .. [RISC-V-SMSTATEEN] RISC-V State Enable Extension, Smstateen, Version 0.6.3-70b1471, 2021-10-13: frozen,
    https://github.com/riscv/riscv-state-enable/releases/download/v0.6.3/Smstateen.pdf
@@ -52,24 +55,25 @@ It follows these specifications:
 .. [RISC-V-ZBA_ZBB_ZBC_ZBS] RISC-V Bit Manipulation ISA-extensions, Version 1.0.0-38-g865e7a7, 2021-06-28,
    https://github.com/riscv/riscv-bitmanip/releases/download/1.0.0/bitmanip-1.0.0-38-g865e7a7.pdf
 
-.. [RISC-V-ZCA_ZCB_ZCMP_ZCMT] RISC-V Standard Extension for the **Zca**, **Zcb**, **Zcmp**, **Zcmt** subsets of **Zc**, v1.0.0-RC5.6 (not ratified yet),
-   https://github.com/riscv/riscv-code-size-reduction/blob/cd13c6b17ccb7e1b8fc8b69e76179b339bcc2b32/Zc-specification/Zc.adoc
+.. [RISC-V-ZCA_ZCB_ZCMP_ZCMT] RISC-V Standard Extension for the **Zca**, **Zcb**, **Zcmp**, **Zcmt** subsets of **Zc**, v1.0.0-RC5.7 (not ratified yet),
+   https://github.com/riscv/riscv-code-size-reduction/releases/download/v1.0.0-RC5.7/Zc-v1.0.0-RC5.7.pdf
 
 .. [RISC-V-SMEPMP] PMP Enhancements for memory access and execution prevention on Machine mode, version 1.0, 12/2021,
    https://github.com/riscv/riscv-tee/blob/b20fda89e8e05605ca943af5897c0bb7f4db9841/Smepmp/Smepmp.pdf
 
+
 .. [RISC-V-CRYPTO] RISC-V Cryptography Extensions Volume I, Scalar & Entropy Source Instructions, Version v1.0.0, 2'nd December, 2021: Ratified,
    https://github.com/riscv/riscv-crypto/releases/download/v1.0.0-scalar/riscv-crypto-spec-scalar-v1.0.0.pdf
 
-.. [OPENHW-OBI] OpenHW Open Bus Interface (OBI) protocol, version 1.5.0,
-   https://github.com/openhwgroup/core-v-docs/blob/master/cores/obi/OBI-v1.5.0.pdf
+.. [OPENHW-OBI] OpenHW Open Bus Interface (OBI) protocol, version 1.6.0,
+   https://github.com/openhwgroup/obi/blob/072d9173c1f2d79471d6f2a10eae59ee387d4c6f/OBI-v1.6.0.pdf
 
 .. [SYMBIOTIC-RVFI] Symbiotic EDA RISC-V Formal Interface
    https://github.com/SymbioticEDA/riscv-formal/blob/master/docs/rvfi.md
 
 Many features in the RISC-V specification are optional, and |corev| can be parameterized to enable or disable some of them.
 
-|corev| supports one of the following base integer instruction sets from [RISC-V-UNPRIV]_.
+|corev| supports one of the following base integer instruction sets:
 
 .. list-table:: |corev| Base Instruction Set
    :header-rows: 1
@@ -80,12 +84,12 @@ Many features in the RISC-V specification are optional, and |corev| can be param
      - Configurability
 
    * - **RV32I**: RV32I Base Integer Instruction Set
-     - 2.1
-     - optionally enabled based on ``RV32`` parameter
+     - 2.1 (from [RISC-V-UNPRIV]_)
+     - optionally enabled with the ``RV32`` parameter
 
    * - **RV32E**: RV32E Base Integer Instruction Set
-     - 1.9 (not ratified yet)
-     - optionally enabled based on ``RV32`` parameter
+     - 2.0 (from [RISC-V-RV32E]_)
+     - optionally enabled with the ``RV32`` parameter
 
 In addition, the following standard instruction set extensions are available from [RISC-V-UNPRIV]_, [RISC-V-ZBA_ZBB_ZBC_ZBS]_, [RISC-V-CRYPTO]_ and [RISC-V-ZCA_ZCB_ZCMP_ZCMT]_.
 
@@ -184,7 +188,7 @@ Most content of the RISC-V privileged specification is optional.
 
 |corev| supports the following ISA extensions from the RISC-V Debug Support specification [RISC-V-DEBUG]_:
 
-* **Sdext**: External Debug support. Always enabled.
+* **Sdext**: External Debug support. Optionally enabled with the ``DEBUG`` parameter.
 * **Sdtrig**: Trigger Module. Optionally enabled with the ``DBG_NUM_TRIGGERS`` parameter.
 
 Synthesis guidelines

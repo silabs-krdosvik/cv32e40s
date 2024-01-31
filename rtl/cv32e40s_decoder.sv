@@ -31,8 +31,7 @@ module cv32e40s_decoder import cv32e40s_pkg::*;
   parameter int unsigned REGFILE_NUM_READ_PORTS = 2,
   parameter b_ext_e      B_EXT                  = B_NONE,
   parameter m_ext_e      M_EXT                  = M,
-  parameter              DEBUG_TRIGGER_EN       = 1,
-  parameter bit          SMCLIC                 = 1
+  parameter bit          CLIC                   = 1
 )
 (
   // singals running to/from controller
@@ -46,6 +45,7 @@ module cv32e40s_decoder import cv32e40s_pkg::*;
   output logic          sys_ecall_insn_o,       // Environment call (syscall) instruction encountered
   output logic          sys_wfi_insn_o,
   output logic          sys_wfe_insn_o,
+  output logic          sys_fence_insn_o,       // fence instruction
   output logic          sys_fencei_insn_o,      // fence.i instruction
 
   // from IF/ID pipeline
@@ -138,16 +138,16 @@ module cv32e40s_decoder import cv32e40s_pkg::*;
   // RV32I Base instruction set decoder
   cv32e40s_i_decoder
   #(
-    .DEBUG_TRIGGER_EN (DEBUG_TRIGGER_EN),
-    .SMCLIC           (SMCLIC          )
+    .CLIC             (CLIC            )
   )
   i_decoder_i
   (
-    .instr_rdata_i  ( instr_rdata           ),
-    .ctrl_fsm_i     ( ctrl_fsm_i            ),
-    .priv_lvl_i     ( if_id_pipe_i.priv_lvl ),
-    .mstatus_i      ( mstatus_i             ),
-    .decoder_ctrl_o ( decoder_i_ctrl_int    )
+    .instr_rdata_i  ( instr_rdata                    ),
+    .tbljmp_i       ( if_id_pipe_i.instr_meta.tbljmp ),
+    .ctrl_fsm_i     ( ctrl_fsm_i                     ),
+    .priv_lvl_i     ( if_id_pipe_i.priv_lvl          ),
+    .mstatus_i      ( mstatus_i                      ),
+    .decoder_ctrl_o ( decoder_i_ctrl_int             )
   );
 
   assign dec_i_rf_illegal_addr = (decoder_i_ctrl_int.rf_re[0] && rf_illegal_raddr_o[0]) ||
@@ -257,6 +257,7 @@ module cv32e40s_decoder import cv32e40s_pkg::*;
   assign sys_ecall_insn_o   = decoder_i_ctrl.sys_ecall_insn;                    // Only I decoder handles ECALL
   assign sys_wfi_insn_o     = decoder_i_ctrl.sys_wfi_insn;                      // Only I decoder handles WFI
   assign sys_wfe_insn_o     = decoder_i_ctrl.sys_wfe_insn;                      // Only I decoder handles WFE
+  assign sys_fence_insn_o   = decoder_i_ctrl.sys_fence_insn;                    // Only I decoder handles FENCE
   assign sys_fencei_insn_o  = decoder_i_ctrl.sys_fencei_insn;                   // Only I decoder handles FENCE.I
 
   // Suppress control signals

@@ -32,8 +32,6 @@ module cv32e40s_id_stage_sva
 (
   input logic           clk,
   input logic           rst_n,
-
-  input logic [31:0]    instr,
   input logic [1:0]     rf_re,
   input logic           rf_we,
   input logic           rf_we_dec,
@@ -44,17 +42,10 @@ module cv32e40s_id_stage_sva
   input logic           csr_en,
   input logic           sys_en,
   input logic           lsu_en,
-  input logic           xif_en,
   input alu_op_a_mux_e  alu_op_a_mux_sel,
   input alu_op_b_mux_e  alu_op_b_mux_sel,
-  input logic           lsu_we,
   input op_c_mux_e      op_c_mux_sel,
-  input logic           sys_dret_insn,
-  input logic           sys_ebrk_insn,
-  input logic           sys_ecall_insn,
-  input logic           sys_fencei_insn,
   input logic           sys_mret_insn,
-  input logic           sys_wfi_insn,
   input logic           ex_ready_i,
   input logic           illegal_insn,
   input logic [31:0]    operand_a_fw,
@@ -71,62 +62,25 @@ module cv32e40s_id_stage_sva
   input ctrl_fsm_t      ctrl_fsm_i,
   input ctrl_byp_t      ctrl_byp_i,
   input mstatus_t       mstatus_i,
-  input logic           xif_insn_accept,
   input logic           last_sec_op,
   input logic [31:0]    jalr_fw,
   input logic           alu_jmp,
   input logic           alu_jmpr,
   input logic [31:0]    jmp_target_o,
   input logic           jmp_taken_id_ctrl_i
-
-
-
 );
 
-/* todo: check and fix/remove
-      // Check that instruction after taken branch is flushed (more should actually be flushed, but that is not checked here)
-      // and that EX stage is ready to receive flushed instruction immediately
-      property p_branch_taken_ex;
-        @(posedge clk) disable iff (!rst_n) (branch_taken_ex == 1'b1) |-> ((ex_ready_i == 1'b1) &&
-                                                                           (alu_en == 1'b0) &&
-                                                                           (mul_en == 1'b0) &&
-                                                                           (rf_we == 1'b0) &&
-                                                                           (lsu_en == 1'b0));
-      endproperty
-
-      a_branch_taken_ex : assert property(p_branch_taken_ex) else `uvm_error("id_stage", "Assertion p_branch_taken_ex failed")
-*/
-
-/* todo: check and fix/remove
-      // Check that if IRQ PC update does not coincide with IRQ related CSR write
-      // MIE is excluded from the check because it has a bypass.
-      property p_irq_csr;
-        @(posedge clk) disable iff (!rst_n)
-          (pc_set_o &&
-           ((pc_mux_o == PC_TRAP_EXC) || (pc_mux_o == PC_TRAP_IRQ)) &&
-           id_ex_pipe_o.csr_access && (id_ex_pipe_o.csr_op != CSR_OP_READ)) |->
-                                  ((id_ex_pipe_o.alu_operand_b[11:0] != CSR_MSTATUS) &&
-                                   (id_ex_pipe_o.alu_operand_b[11:0] != CSR_MEPC) &&
-                                   (id_ex_pipe_o.alu_operand_b[11:0] != CSR_MCAUSE) &&
-                                   (id_ex_pipe_o.alu_operand_b[11:0] != CSR_MTVEC));
-      endproperty
-
-      a_irq_csr : assert property(p_irq_csr) else `uvm_error("id_stage", "Assertion p_irq_csr failed")
-*/
-
   // Check that illegal instruction has no other side effects
-  // If XIF accepts instruction, rf_we may still be 1
   a_illegal_1 :
     assert property (@(posedge clk) disable iff (!rst_n)
       (illegal_insn == 1'b1) |-> !(alu_en || csr_en || sys_en || mul_en || div_en || lsu_en))
-    else `uvm_error("id_stage", "No functional units (except for XIF) should be enabled for illegal instructions")
+    else `uvm_error("id_stage", "No functional units should be enabled for illegal instructions")
 
   a_illegal_2 :
     assert property (@(posedge clk) disable iff (!rst_n)
       (illegal_insn == 1'b1) |-> (
       (csr_op == CSR_OP_READ) &&
-      (alu_op_a_mux_sel == OP_A_NONE) && (alu_op_b_mux_sel == OP_B_NONE) || (op_c_mux_sel == OP_C_NONE) &&
-      !(rf_we && !xif_insn_accept)))
+      (alu_op_a_mux_sel == OP_A_NONE) && (alu_op_b_mux_sel == OP_B_NONE) || (op_c_mux_sel == OP_C_NONE)))
     else `uvm_error("id_stage", "Illegal instructions should not have side effects")
 
   // Halt implies not ready and not valid
@@ -195,17 +149,26 @@ module cv32e40s_id_stage_sva
   // Ensure that functional unit enables are one-hot (ALU and DIV both use the ALU though)
   a_functional_unit_enable_onehot :
     assert property (@(posedge clk) disable iff (!rst_n)
-                     $onehot0({alu_en, div_en, mul_en, csr_en, sys_en, lsu_en, xif_en}))
+                     $onehot0({alu_en, div_en, mul_en, csr_en, sys_en, lsu_en}))
       else `uvm_error("id_stage", "Multiple functional units enabled")
 
   // Check that second part of a multicycle mret does not stall on the first part of the same instruction
   a_mret_self_stall :
     assert property (@(posedge clk) disable iff (!rst_n)
                       (sys_en && sys_mret_insn && last_sec_op) &&
-                      ((id_ex_pipe_o.sys_en && id_ex_pipe_o.sys_mret_insn) ||
-                       (ex_wb_pipe.sys_en && ex_wb_pipe.sys_mret_insn))
-                       |-> !ctrl_byp_i.csr_stall)
+                      ((id_ex_pipe_o.sys_en && id_ex_pipe_o.sys_mret_insn && !id_ex_pipe_o.last_sec_op && id_ex_pipe_o.instr_valid) ||
+                       (ex_wb_pipe.sys_en && ex_wb_pipe.sys_mret_insn && !ex_wb_pipe.last_sec_op && ex_wb_pipe.instr_valid))
+                       |-> !ctrl_byp_i.csr_stall_id)
       else `uvm_error("id_stage", "mret stalls on itself")
+
+  // Check that an mret will cause a csr_stall if there is a different mret in front of it in the pipeline
+  a_mret_stall :
+    assert property (@(posedge clk) disable iff (!rst_n)
+                      (sys_en && sys_mret_insn) &&
+                      ((id_ex_pipe_o.sys_en && id_ex_pipe_o.sys_mret_insn && (if_id_pipe_i.pc != id_ex_pipe_o.pc) && id_ex_pipe_o.instr_valid)||
+                       (ex_wb_pipe.sys_en   && ex_wb_pipe.sys_mret_insn   && (if_id_pipe_i.pc != ex_wb_pipe.pc)   && ex_wb_pipe.instr_valid))
+                        |-> ctrl_byp_i.csr_stall_id)
+      else `uvm_error("id_stage", "mret not causing a csr_stall_id")
 
 
   // Assert that jalr_fw has the same value as operand_a_fw when a jump is taken
@@ -253,6 +216,6 @@ module cv32e40s_id_stage_sva
 
       end
     endgenerate
-  
+
 endmodule
 

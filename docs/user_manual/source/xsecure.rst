@@ -34,6 +34,7 @@ The following issues result in a major security alert on ``alert_major_o``:
 * Instruction parity/checksum fault (i.e. when triggering the related exception).
 * Store parity/checksum fault (i.e. when triggering the related NMI).
 * Load parity/checksum fault NMI (i.e. when triggering the related NMI).
+* Bus protocol error.
 
 The following issues result in a minor security alert on ``alert_minor_o``:
 
@@ -99,7 +100,7 @@ The frequency of injected instructions can be tuned via the ``rnddummyfreq`` bit
 Other ``rnddummyfreq`` values are legal as well, but will have a less predictable performance impact.
 
 The frequency of the dummy instruction insertion is randomized using an LFSR (LFSR0). The dummy instruction itself is also randomized based on LFSR0
-and is constrained to ``add``, ``mul``, and ``bltu`` instructions. The source data for the dummy instructions is obtained from LFSRs (LFSR1 and LFSR2) as opposed to sourcing
+and is constrained to ``add``, ``mul``, ``and`` and ``bltu`` instructions. The source data for the dummy instructions is obtained from LFSRs (LFSR1 and LFSR2) as opposed to sourcing
 it from the register file.
 
 The initial seed and output permutation for the LFSRs can be set using the following parameters from the |corev| top-level:
@@ -141,7 +142,7 @@ Random instruction for hint
 The ``c.slli with rd=x0, nzimm!=0`` RVC custom use hint is replaced by a random instruction if enabled via the ``rndhint`` bit in the ``cpuctrl`` CSR (and will act as a regular ``nop`` otherwise).
 The random instruction has no functional impact on the processor state (i.e. it is functionally equivalent to a ``nop``, but it can result in different
 cycle count, instruction fetch and power behavior). The random instruction is randomized based on LFSR0 and is constrained to
-``add``, ``mul``, and ``bltu`` instructions. The source data for the random instruction is obtained from LFSRs (LFSR1 and LFSR2) as opposed
+``add``, ``mul``, ``and`` and ``bltu`` instructions. The source data for the random instruction is obtained from LFSRs (LFSR1 and LFSR2) as opposed
 to sourcing it from the register file.
 
 .. note::
@@ -177,8 +178,8 @@ Any error in the check for correct PC or branch/jump decision will result in a p
 
 Hardened CSRs
 -------------
-Critical CSRs (``jvt``, ``mstatus``, ``mtvec``, ``pmpcfg``, ``pmpaddr*``, ``mseccfg*``, ``cpuctrl``, ``dcsr``, ``mie``, ``mepc``,
-``mtvt``, ``mscratch``, ``mintstatus``, ``mintthresh``, ``mscratchcsw``, ``mscratchcswl`` and ``mclicbase``)
+Critical CSRs (``jvt``, ``mstatus``, ``mtvec``, ``pmpcfg*``, ``pmpaddr*``, ``mseccfg*``, ``cpuctrl``, ``dcsr``, ``mcause``, ``mie``, ``mepc``,
+``mtvt``, ``mscratch``, ``mintstatus``, ``mintthresh``, ``mscratchcsw`` and ``mscratchcswl``)
 have extra glitch detection enabled.
 For these registers a second copy of the register is added which stores a complemented version of the main CSR data. A constant check is made that the two copies are consistent, and a major alert is signaled if not (see :ref:`security-alerts`).
 
@@ -219,26 +220,28 @@ The OBI ([OPENHW-OBI]_) bus interfaces have associated parity and checksum signa
   +--------------+-------------------------------------------------+--------------------------------------------------------------------------------+
   | ``achk[5]``  | Odd parity(``be[3:0]``, ``we``)                 | For the instruction interface ``be[3:0]`` = 4'b1111 and ``we`` = 1'b0 is used. |
   +--------------+-------------------------------------------------+--------------------------------------------------------------------------------+
-  | ``achk[6]``  | Odd parity(``dbg``)                             |                                                                                |
+  | ``achk[6]``  | Even parity(``mid[7:0]``)                       | ``mid[7:0]`` = 8'b0 as the ``mid`` signal is not implemented.                  |
   +--------------+-------------------------------------------------+--------------------------------------------------------------------------------+
   | ``achk[7]``  | Even parity(``atop[5:0]``)                      | ``atop[5:0]`` = 6'b0 as the **A** extension is not implemented.                |
   +--------------+-------------------------------------------------+--------------------------------------------------------------------------------+
-  | ``achk[8]``  | Even parity(``wdata[7:0]``)                     | For the instruction interface ``wdata[7:0]`` = 8'b0.                           |
+  | ``achk[8]``  | Odd parity(``dbg``)                             |                                                                                |
   +--------------+-------------------------------------------------+--------------------------------------------------------------------------------+
-  | ``achk[9]``  | Even parity(``wdata[15:8]``)                    | For the instruction interface ``wdata[15:8]`` = 8'b0.                          |
+  | ``achk[9]``  | Even parity(``wdata[7:0]``)                     | For the instruction interface ``wdata[7:0]`` = 8'b0.                           |
   +--------------+-------------------------------------------------+--------------------------------------------------------------------------------+
-  | ``achk[10]`` | Even parity(``wdata[23:16]``)                   | For the instruction interface ``wdata[23:16]`` = 8'b0.                         |
+  | ``achk[10]`` | Even parity(``wdata[15:8]``)                    | For the instruction interface ``wdata[15:8]`` = 8'b0.                          |
   +--------------+-------------------------------------------------+--------------------------------------------------------------------------------+
-  | ``achk[11]`` | Even parity(``wdata[31:24]``)                   | For the instruction interface ``wdata[31:24]`` = 8'b0.                         |
+  | ``achk[11]`` | Even parity(``wdata[23:16]``)                   | For the instruction interface ``wdata[23:16]`` = 8'b0.                         |
+  +--------------+-------------------------------------------------+--------------------------------------------------------------------------------+
+  | ``achk[12]`` | Even parity(``wdata[31:24]``)                   | For the instruction interface ``wdata[31:24]`` = 8'b0.                         |
   +--------------+-------------------------------------------------+--------------------------------------------------------------------------------+
 
 .. note::
-   |corev| always generates its ``achk[11:8]`` bits dependent on ``wdata`` (even for read transactions). The ``achk[11:8]`` signal bits
+   |corev| always generates its ``achk[12:9]`` bits dependent on ``wdata`` (even for read transactions). The ``achk[12:9]`` signal bits
    are however not required to be checked against ``wdata`` for read transactions (see [OPENHW-OBI]_). Whether the environment performs these checks or not
    is platform specific.
 
 .. note::
-   ``achk[11:8]`` are always valid for ``wdata[31:0]`` (even for sub-word transactions).
+   ``achk[12:9]`` are always valid for ``wdata[31:0]`` (even for sub-word transactions).
 
 .. table:: Response phase checksum
   :name: Response phase checksum

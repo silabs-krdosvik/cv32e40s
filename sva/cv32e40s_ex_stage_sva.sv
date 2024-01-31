@@ -26,9 +26,6 @@
 module cv32e40s_ex_stage_sva
   import uvm_pkg::*;
   import cv32e40s_pkg::*;
-#(
-  parameter bit X_EXT     = 1'b0
-)
 (
   input logic           clk,
   input logic           rst_n,
@@ -36,6 +33,7 @@ module cv32e40s_ex_stage_sva
   input logic           ex_ready_o,
   input logic           ex_valid_o,
   input logic           wb_ready_i,
+  input logic           wb_valid_i,
   input ctrl_fsm_t      ctrl_fsm_i,
   input xsecure_ctrl_t  xsecure_ctrl_i,
 
@@ -48,7 +46,9 @@ module cv32e40s_ex_stage_sva
   input logic           branch_decision_o,
   input logic           instr_valid,
 
-  input logic           branch_taken_ex_ctrl_i
+  input logic           branch_taken_ex_ctrl_i,
+  input logic           last_op_o,
+  input logic           ctrl_flush_ack_n
 );
 
   // Halt implies not ready and not valid
@@ -65,45 +65,14 @@ module cv32e40s_ex_stage_sva
                       |-> (ex_ready_o && !ex_valid_o))
       else `uvm_error("ex_stage", "Kill should imply ready and not valid")
 
-// Only include following assertions if X_EXT=1
-generate
-  if(X_EXT == 1'b1) begin
-    // csr_en suppressed for xif accepted and pipeline accepted CSR
-    // todo: Add similar check for rf_we
-    a_suppress_csr_xif_legal_pipeline_legal :
-    assert property (@(posedge clk) disable iff (!rst_n)
-                      ((id_ex_pipe_i.xif_en && id_ex_pipe_i.xif_meta.accepted) && id_ex_pipe_i.csr_en && !csr_illegal_i) &&
-                      (id_ex_pipe_i.instr_valid && ex_valid_o && wb_ready_i)
-                      |=> !ex_wb_pipe_o.csr_en)
-      else `uvm_error("ex_stage", "csr_en not suppressed after eXtension interface and pipeline accepted CSR")
 
-    // csr_en suppressed for xif accepted and pipeline rejected CSR
-    // todo: Add similar check for rf_we
-    a_suppress_csr_xif_legal_pipeline_illegal :
-    assert property (@(posedge clk) disable iff (!rst_n)
-                      ((id_ex_pipe_i.xif_en && id_ex_pipe_i.xif_meta.accepted) && id_ex_pipe_i.csr_en && csr_illegal_i) &&
-                      (id_ex_pipe_i.instr_valid && ex_valid_o && wb_ready_i)
-                      |=> !ex_wb_pipe_o.csr_en)
-      else `uvm_error("ex_stage", "csr_en not suppressed after eXtension interface accepted and pipeline rejected CSR")
-  end
-endgenerate
-  // csr_en suppressed for xif reject and pipeline reject CSR
-  // todo: Add similar check for rf_we
-  a_suppress_csr_xif_illegal_pipeline_illegal :
+  // csr_en suppressed in WB stage when cs_registers marks an access with illegal
+  a_suppress_csr_pipeline_illegal :
   assert property (@(posedge clk) disable iff (!rst_n)
-                    (!(id_ex_pipe_i.xif_en && id_ex_pipe_i.xif_meta.accepted) && id_ex_pipe_i.csr_en && csr_illegal_i) &&
+                    (id_ex_pipe_i.csr_en && csr_illegal_i) &&
                     (id_ex_pipe_i.instr_valid && ex_valid_o && wb_ready_i)
-                    |=> !ex_wb_pipe_o.csr_en)
-    else `uvm_error("ex_stage", "csr_en not suppressed after eXtension interface rejected and pipeline rejected CSR")
-
-    // csr_en not suppressed for xif reject and pipeline accept CSR
-    // todo: Add similar check for rf_we
-    a_suppress_csr_xif_illegal_pipeline_legal :
-    assert property (@(posedge clk) disable iff (!rst_n)
-                      (!(id_ex_pipe_i.xif_en && id_ex_pipe_i.xif_meta.accepted) && id_ex_pipe_i.csr_en && !csr_illegal_i) &&
-                      (id_ex_pipe_i.instr_valid && ex_valid_o && wb_ready_i)
-                      |=> ex_wb_pipe_o.csr_en)
-      else `uvm_error("ex_stage", "csr_en suppressed after eXtension interface rejected and pipeline accepted CSR")
+                    |=> !ex_wb_pipe_o.csr_en && !ex_wb_pipe_o.rf_we)
+    else `uvm_error("ex_stage", "csr_en not suppressed after pipeline rejected CSR")
 
   // First access of split LSU instruction should have rf_we deasserted
   a_split_rf_we:
@@ -115,7 +84,7 @@ endgenerate
   a_functional_unit_enable_onehot :
     assert property (@(posedge clk) disable iff (!rst_n)
                      $onehot0({id_ex_pipe_i.alu_en, id_ex_pipe_i.div_en, id_ex_pipe_i.mul_en,
-                     id_ex_pipe_i.csr_en, id_ex_pipe_i.sys_en, id_ex_pipe_i.lsu_en, id_ex_pipe_i.xif_en}))
+                     id_ex_pipe_i.csr_en, id_ex_pipe_i.sys_en, id_ex_pipe_i.lsu_en}))
       else `uvm_error("ex_stage", "Multiple functional units enabled")
 
   // Assert that branch decision is always 1 when dataindtiming=1
@@ -152,18 +121,50 @@ endgenerate
 
 
   // Check that branch target remains constant while a branch instruction is in EX
-  // Restricted check to only be valid when local instr_valid is true, as the branch target // todo: not agreed with using instr_valid here (it is much to broad/permissive); maybe data independent timing related CSR needs to be handled differently to make this assertion easier to reason about
-  // will change when data independent timing is being enabled in WB. Eventually the branch will
-  // then be killed. When data independing timing is enabled, the target may change from operand_c to pc_if.
+  // Branches are taken during their first un-stalled cycle in EX. If the target changes before
+  // the branch can move to WB, we might have taken the branch before an unresolved dependency.
+  // Only checking when ctrl_flush_ack_n is not 1, as this indicates that a CSR write will cause a pipeline flush.
+  //  This CSR write may potentially change the branch target due to changing the cputrl.dataindtiming bit. Branch in EX will be killed.
   property p_bch_target_stable;
     logic [31:0] bch_target;
     @(posedge clk) disable iff (!rst_n)
-    (instr_valid && branch_taken_ex_ctrl_i && !ctrl_fsm_i.kill_ex, bch_target=branch_target_o)
+    (branch_taken_ex_ctrl_i && !ctrl_flush_ack_n, bch_target=branch_target_o)
     |->
-    (bch_target == branch_target_o) until_with ((ex_valid_o && wb_ready_i) || ctrl_fsm_i.kill_ex);
+    (bch_target == branch_target_o) until_with ((ex_valid_o && wb_ready_i && last_op_o) || ctrl_fsm_i.kill_ex);
   endproperty
 
   a_bch_target_stable: assert property (p_bch_target_stable)
     else `uvm_error("ex_stage", "Branch target not stable")
 
-endmodule
+  // Check that instruction after taken branch is flushed (more should actually be flushed, but that is not checked here)
+  // and that EX stage is ready to receive flushed instruction immediately, as long as there's no backpressure from WB
+  // Only check when PC hardening is disabled. With PC hardening enabled, a taken branch will only kill the IF stage due
+  // to the branch recompute staying in ID. When PC hardening is enabled, this scenario should be covered by 'a_kill_if'
+  // in the controller_fsm_sva.
+  property p_branch_taken_ex_flush;
+    @(posedge clk) disable iff (!rst_n)
+      ((branch_taken_ex_ctrl_i == 1'b1) && !(ctrl_fsm_i.kill_ex || ctrl_fsm_i.halt_ex ) && wb_ready_i &&
+      !xsecure_ctrl_i.cpuctrl.pc_hardening
+      |->
+       ex_ready_o ##1 (id_ex_pipe_i.instr_valid == 1'b0));
+  endproperty : p_branch_taken_ex_flush
+
+  a_branch_taken_ex_flush : assert property(p_branch_taken_ex_flush)
+    else `uvm_error("id_stage", "Assertion p_branch_taken_ex failed")
+
+  // Check that there's a bubble in EX when there's a taken branch in WB
+  // This complements a_branch_taken_ex_flush as a_branch_taken_ex_flush wil not check anything if there's backpressure from WB
+  // when a branch is taken
+  // Only check when PC hardening is disabled. With PC hardening enabled, a taken branch will only kill the IF stage. The bubble
+  // in IF may be squashed if the branch stays in ID and EX for multiple cycles (while waiting for a load or store for instance).
+  // When PC hardening is enabled, this scenario should be covered by 'a_kill_if' in the controller_fsm_sva.
+  property p_bubble_ex_when_branch_taken_wb;
+    @(posedge clk) disable iff (!rst_n)
+      ( ex_wb_pipe_o.alu_bch_taken_qual && wb_valid_i && !xsecure_ctrl_i.cpuctrl.pc_hardening |->
+        (id_ex_pipe_i.instr_valid == 1'b0));
+  endproperty : p_bubble_ex_when_branch_taken_wb
+
+  a_bubble_ex_when_branch_taken_wb : assert property(p_bubble_ex_when_branch_taken_wb)
+    else `uvm_error("id_stage", "Assertion p_branch_taken_ex failed")
+
+endmodule // cv32e40s_ex_stage_sva

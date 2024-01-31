@@ -28,15 +28,19 @@ module cv32e40s_mpu import cv32e40s_pkg::*;
       parameter type         CORE_REQ_TYPE                = obi_inst_req_t,
       parameter type         CORE_RESP_TYPE               = inst_resp_t,
       parameter type         BUS_RESP_TYPE                = obi_inst_resp_t,
-      parameter int          PMP_GRANULARITY              = 0,
+      parameter int unsigned PMP_GRANULARITY              = 0,
       parameter int          PMP_NUM_REGIONS              = 0,
       parameter int          PMA_NUM_REGIONS              = 0,
-      parameter pma_cfg_t    PMA_CFG[PMA_NUM_REGIONS-1:0] = '{default:PMA_R_DEFAULT})
+      parameter pma_cfg_t    PMA_CFG[PMA_NUM_REGIONS-1:0] = '{default:PMA_R_DEFAULT},
+      parameter bit          DEBUG                        = 1,
+      parameter logic [31:0] DM_REGION_START              = 32'hF0000000,
+      parameter logic [31:0] DM_REGION_END                = 32'hF0003FFF)
   (
    input logic  clk,
    input logic  rst_n,
 
    input logic  misaligned_access_i, // Indicate that ongoing access is part of a misaligned access
+   input logic  modified_access_i,   // Indicate that ongoing access is part of a modified access
 
    // Interface towards bus interface
    input logic  bus_trans_ready_i,
@@ -48,6 +52,7 @@ module cv32e40s_mpu import cv32e40s_pkg::*;
 
    // Interface towards core
    input logic  core_trans_valid_i,
+   input logic  core_trans_pushpop_i,
    output logic core_trans_ready_o,
    input        CORE_REQ_TYPE core_trans_i,
 
@@ -57,14 +62,11 @@ module cv32e40s_mpu import cv32e40s_pkg::*;
    // PMP CSR's
    input        pmp_csr_t csr_pmp_i,
 
-   // Privilege mode
-   input              privlvl_t priv_lvl_i,
-
    // Indication from the core that there will be one pending transaction in the next cycle
    input logic  core_one_txn_pend_n,
 
    // Indication from the core that MPU errors should be reported after all in flight transactions
-   // are complete (default behavior for main core requests, but not used for XIF requests)
+   // are complete
    input logic  core_mpu_err_wait_i,
 
    // Report MPU errors to the core immediatly (used in case core_mpu_err_wait_i is not asserted)
@@ -88,8 +90,13 @@ module cv32e40s_mpu import cv32e40s_pkg::*;
   logic        core_trans_we;
   pmp_req_e    pmp_req_type;
   logic [33:0] pmp_req_addr;
+  privlvl_t    pmp_priv_lvl;
   logic        instr_fetch_access;
   logic        load_access;
+  logic        core_trans_debug_region;
+
+  // Detect a debug mode transaction to the Debug Module region
+  assign core_trans_debug_region = (core_trans_i.addr >= DM_REGION_START) && (core_trans_i.addr <= DM_REGION_END) && core_trans_i.dbg;
 
   // FSM that will "consume" transfers failing PMA or PMP checks.
   // Upon failing checks, this FSM will prevent the transfer from going out on the bus
@@ -181,10 +188,10 @@ module cv32e40s_mpu import cv32e40s_pkg::*;
 
   // Forward transaction response towards core
   assign core_resp_valid_o      = bus_resp_valid_i || mpu_err_trans_valid;
-  assign core_resp_o.bus_resp   = bus_resp_i;
   assign core_resp_o.mpu_status = mpu_status;
 
-  // Report MPU errors to the core immediatly
+
+  // Report MPU errors to the core immediately
   assign core_mpu_err_o = mpu_err;
 
   // Signal ready towards core
@@ -192,39 +199,44 @@ module cv32e40s_mpu import cv32e40s_pkg::*;
 
   // PMA - Physical Memory Attribution
   cv32e40s_pma
-    #(.PMA_NUM_REGIONS          ( PMA_NUM_REGIONS      ),
-      .PMA_CFG                  ( PMA_CFG              )
+    #(.PMA_NUM_REGIONS          ( PMA_NUM_REGIONS         ),
+      .PMA_CFG                  ( PMA_CFG                 )
   )
   pma_i
     (
-    .trans_addr_i               ( core_trans_i.addr    ),
-    .instr_fetch_access_i       ( instr_fetch_access   ),
-    .misaligned_access_i        ( misaligned_access_i  ),
-    .load_access_i              ( load_access          ),
-    .pma_err_o                  ( pma_err              ),
-    .pma_integrity_o            ( bus_trans_integrity  ),
-    .pma_bufferable_o           ( bus_trans_bufferable ),
-    .pma_cacheable_o            ( bus_trans_cacheable  )
+    .trans_addr_i               ( core_trans_i.addr       ),
+    .trans_debug_region_i       ( core_trans_debug_region ),
+    .trans_pushpop_i            ( core_trans_pushpop_i    ),
+    .instr_fetch_access_i       ( instr_fetch_access      ),
+    .misaligned_access_i        ( misaligned_access_i     ),
+    .modified_access_i          ( modified_access_i       ),
+    .load_access_i              ( load_access             ),
+    .pma_err_o                  ( pma_err                 ),
+    .pma_integrity_o            ( bus_trans_integrity     ),
+    .pma_bufferable_o           ( bus_trans_bufferable    ),
+    .pma_cacheable_o            ( bus_trans_cacheable     )
   );
 
   assign pmp_req_addr = {2'b00, core_trans_i.addr};
+  assign pmp_priv_lvl = privlvl_t'(core_trans_i.prot[2:1]);
 
   generate
     if (PMP) begin: pmp
       cv32e40s_pmp
         #(// Parameters
-          .PMP_GRANULARITY                  (PMP_GRANULARITY),
-          .PMP_NUM_REGIONS                  (PMP_NUM_REGIONS))
+          .PMP_GRANULARITY                  (PMP_GRANULARITY        ),
+          .PMP_NUM_REGIONS                  (PMP_NUM_REGIONS        ))
       pmp_i
         (// Outputs
-         .pmp_req_err_o                     (pmp_err),
+         .pmp_req_err_o                     (pmp_err                ),
          // Inputs
-         .clk                               (clk),
-         .rst_n                             (rst_n),
-         .pmp_req_type_i                    (pmp_req_type),
-         .csr_pmp_i                         (csr_pmp_i),
-         .priv_lvl_i                        (priv_lvl_i),
-         .pmp_req_addr_i                    (pmp_req_addr));
+         .clk                               (clk                    ),
+         .rst_n                             (rst_n                  ),
+         .pmp_req_type_i                    (pmp_req_type           ),
+         .csr_pmp_i                         (csr_pmp_i              ),
+         .priv_lvl_i                        (pmp_priv_lvl           ),
+         .pmp_req_addr_i                    (pmp_req_addr           ),
+         .pmp_req_debug_region_i            (core_trans_debug_region));
     end
     else begin: no_pmp
       assign pmp_err = 1'b0;
@@ -237,19 +249,20 @@ module cv32e40s_mpu import cv32e40s_pkg::*;
   // Tie to 1'b0 if this MPU is instantiatied in the IF stage
   generate
     if (IF_STAGE) begin: mpu_if
-      assign instr_fetch_access = 1'b1;
-      assign load_access        = 1'b0;
-      assign core_trans_we      = 1'b0;
-      assign pmp_req_type       = PMP_ACC_EXEC;
+      assign instr_fetch_access     = 1'b1;
+      assign load_access            = 1'b0;
+      assign core_trans_we          = 1'b0;
+      assign core_resp_o.bus_resp   = bus_resp_i;
+      assign pmp_req_type           = PMP_ACC_EXEC;
     end
     else begin: mpu_lsu
-      assign instr_fetch_access = 1'b0;
-      assign load_access        = !core_trans_i.we;
-      assign core_trans_we      = core_trans_i.we;
-      assign pmp_req_type       = core_trans_we ? PMP_ACC_WRITE : PMP_ACC_READ;
+      assign instr_fetch_access       = 1'b0;
+      assign load_access              = !core_trans_i.we;
+      assign core_trans_we            = core_trans_i.we;
+      assign core_resp_o.wpt_match    = '0; // Will be set by upstream wpt-module within load_store_unit
+      assign core_resp_o.bus_resp     = bus_resp_i;
+      assign pmp_req_type             = core_trans_we ? PMP_ACC_WRITE : PMP_ACC_READ;
     end
   endgenerate
-
-// TODO:OE any way to check that the 2nd access of a failed misalgn will not reach the MPU?
 
 endmodule

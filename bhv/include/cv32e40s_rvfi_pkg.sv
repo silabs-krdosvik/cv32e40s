@@ -32,7 +32,8 @@ package cv32e40s_rvfi_pkg;
   typedef enum logic [1:0] { // Memory error types
     MEM_ERR_PMP      = 2'h2,
     MEM_ERR_ATOMIC   = 2'h1,
-    MEM_ERR_IO_ALIGN = 2'h0
+    MEM_ERR_IO_ALIGN = 2'h0,
+    MEM_ERR_ATOMIC_MISALIGN = 2'h3
   } mem_err_t;
 
   typedef struct packed { // Autonomously updated CSRs
@@ -64,11 +65,9 @@ package cv32e40s_rvfi_pkg;
     logic                         [31:0] mintthresh;
     logic                         [31:0] mscratchcsw;
     logic                         [31:0] mscratchcswl;
-    logic                         [31:0] mclicbase;
     logic                         [31:0] tselect;
-    logic [ 3:0]                  [31:0] tdata;
+    logic [ 2:0]                  [31:0] tdata;
     logic                         [31:0] tinfo;
-    logic                         [31:0] tcontrol;
     logic                         [31:0] dcsr;
     logic                         [31:0] dpc;
     logic [ 1:0]                  [31:0] dscratch;
@@ -119,6 +118,7 @@ package cv32e40s_rvfi_pkg;
   } rvfi_intr_t;
 
   typedef struct packed {
+    logic        clicptr;
     logic [1:0]  cause_type;
     logic [2:0]  debug_cause;
     logic [5:0]  exception_cause;
@@ -129,7 +129,8 @@ package cv32e40s_rvfi_pkg;
 
   typedef struct packed {
     obi_inst_req_t  req_payload;
-    obi_inst_resp_t resp_payload;
+    inst_resp_t     resp_payload;
+    logic           pmp_err;
   } rvfi_obi_instr_t;
 
 endpackage

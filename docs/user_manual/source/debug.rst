@@ -3,13 +3,13 @@
 Debug & Trigger
 ===============
 
-|corev| offers support for execution-based debug according to [RISC-V-DEBUG]_. The main requirements for the core are described in Chapter 4: RISC-V Debug, Chapter 5: Trigger Module, and Appendix A.2: Execution Based.
+|corev| offers support for execution-based debug according to [RISC-V-DEBUG]_ (only) if ``DEBUG`` = 1.
 
 .. note::
 
-   As execution based debug is used, the Debug Module (with code entry points defined by ``dm_halt_addr_i`` and ``dm_exception_addr_i``) needs to be located
-   in a memory region that supports code execution. This therefore (at least) requires that the related memory region is marked as Main in the PMA (:ref:`pma`), which
-   is the default behavior if the PMA is deconfigured.
+   As execution based debug is used, the Debug Module region, as defined by the ``DM_REGION_START`` and ``DM_REGION_END`` parameters, needs to support
+   code execution, loads and stores when |corev| is in debug mode.
+   In order to achieve this |corev| overrules the PMA and PMP settings for the Debug Module region when it is in debug mode (see :ref:`pma` and  :ref:`pmp`).
 
 The following list shows the simplified overview of events that occur in the core when debug is requested:
 
@@ -49,7 +49,7 @@ halfword load/store for address ``A`` uses ``A`` and ``A+1`` as compare values; 
 A trigger match will cause debug entry if ``tdata1.ACTION`` is 1.
 
 .. note::
-  Hardware triggers and breakpoints are not supported for the table fetch used in table jump instructions and CLIC hardware vectored interrupts. 
+  Hardware triggers and breakpoints are not supported for the table fetch used in table jump instructions and CLIC hardware vectored interrupts.
 
 The |corev| will not support the optional debug features 10, 11, & 12 listed in Section 4.1 of [RISC-V-DEBUG]_. Specifically, a control transfer instruction's destination location being in or out of the Program Buffer and instructions depending on PC value shall **not** cause an illegal instruction.
 
@@ -82,7 +82,8 @@ Interface
   | ``dm_exception_addr_i[31:0]`` | input     | Address for debugger exception entry       |
   +-------------------------------+-----------+--------------------------------------------+
 
-``debug_req_i`` is the "debug interrupt", issued by the debug module when the core should enter Debug Mode. The ``debug_req_i`` is synchronous to ``clk_i`` and requires a minimum assertion of one clock period to enter Debug Mode. The instruction being decoded during the same cycle that ``debug_req_i`` is first asserted shall not be executed before entering Debug Mode.
+``debug_req_i`` is the "debug interrupt", issued by the debug module when the core should enter Debug Mode. The ``debug_req_i`` signal is synchronous to ``clk_i`` and it is level sensitive.
+It is not guaranteed that a short pulse on ``debug_req_i`` will cause |corev| to enter debug mode.
 
 ``debug_havereset_o``, ``debug_running_o``, and ``debug_mode_o`` signals provide the operational status of the core to the debug module. The assertion of these
 signals is mutually exclusive.
@@ -96,20 +97,20 @@ cleared low a few (unspecified) cycles after ``rst_ni`` has been deasserted **an
 
 ``debug_pc_o`` is the PC of the last retired instruction. This signal is only valid when ``debug_pc_valid_o`` = 1.
 
-``dm_halt_addr_i`` is the address where the PC jumps to for a debug entry event. When in Debug Mode, an ebreak instruction will also cause the PC to jump back to this address without affecting status registers. (see :ref:`ebreak_behavior` below)
+``dm_halt_addr_i`` is the address where the PC jumps to for a debug entry event. When in Debug Mode, an ebreak instruction will also cause the PC to jump back to this address without affecting status registers. (see :ref:`ebreak_behavior` below).
 
 ``dm_exception_addr_i`` is the address where the PC jumps to when an exception occurs during Debug Mode. When in Debug Mode, the ``mret`` and ``ecall`` instructions will also cause the PC to jump back to this address without affecting status registers.
 
-Both ``dm_halt_addr_i`` and ``dm_exception_addr_i`` must be word aligned.
+Both ``dm_halt_addr_i`` and ``dm_exception_addr_i`` must be word aligned and they must both be within the Debug Module region as defined by the ``DM_REGION_START`` and ``DM_REGION_END`` parameters.
 
 Core Debug Registers
 --------------------
 
-|corev| implements four core debug registers, namely :ref:`csr-dcsr`, :ref:`csr-dpc`, and two debug scratch registers. Access to these registers in non Debug Mode results in an illegal instruction.
+If ``DEBUG`` = 1, |corev| implements four core debug registers, namely :ref:`csr-dcsr`, :ref:`csr-dpc`, and two debug scratch registers. Access to these registers in non Debug Mode results in an illegal instruction.
 
-The trigger related CSRs (``tselect``, ``tdata1``, ``tdata2``, ``tdata3``, ``tinfo``, ``tcontrol``) are only included if ``DBG_NUM_TRIGGERS`` is
-set to a value greater than 0. Further descriptions of these CSRs can be found in :ref:`csr-tselect`, :ref:`csr-tdata1`, :ref:`csr-tdata2`, :ref:`csr-tdata3`,
-:ref:`csr-tinfo`, :ref:`csr-tcontrol` and [RISC-V-DEBUG]_. The optional ``mcontext`` and ``mscontext`` CSRs are not implemented.
+The trigger related CSRs (``tselect``, ``tdata1``, ``tdata2``, ``tinfo``) are only included if ``DBG_NUM_TRIGGERS`` is
+set to a value greater than 0. Further descriptions of these CSRs can be found in :ref:`csr-tselect`, :ref:`csr-tdata1`, :ref:`csr-tdata2`,
+:ref:`csr-tinfo` and [RISC-V-DEBUG]_. The optional ``mcontext`` and ``mscontext`` CSRs are not implemented.
 
 If ``DBG_NUM_TRIGGERS`` is 0, access to the trigger registers will result in an illegal instruction exception.
 
@@ -130,21 +131,6 @@ cycle(s) after ``rst_ni`` has been deasserted and ``fetch_enable_i`` has been sa
 core will transition between having its ``debug_halted_o`` or ``debug_running_o`` pin asserted depending whether the core is in debug mode or not.
 Exactly one of the ``debug_havereset_o``, ``debug_running_o``, ``debug_halted_o`` is asserted at all times.
 
-:numref:`debug-running` and show :numref:`debug-halted` show typical examples of transitioning into the ``running`` and ``halted`` states.
-
-.. figure:: ../images/debug_running.svg
-   :name: debug-running
-   :align: center
-   :alt:
-
-   Transition into debug ``running`` state
-
-.. figure:: ../images/debug_halted.svg
-   :name: debug-halted
-   :align: center
-   :alt:
-
-   Transition into debug ``halted`` state
 
 The key properties of the debug states are:
 
@@ -153,6 +139,10 @@ The key properties of the debug states are:
    is guaranteed to transition straight from its ``unavailable`` state into its ``halted`` state. If ``debug_req_i`` is asserted at a later
    point in time, then the |corev| might transition through the ``running`` state on its ways to the ``halted`` state.
  * If ``debug_req_i`` is asserted during the ``running`` state, the core will eventually transition into the ``halted`` state (typically after a couple of cycles).
+
+ .. note::
+  Due to ``debug_req_i`` being level sensitive, it is not guaranteed that a short pulse on ``debug_req_i`` will cause |corev| to enter its ``halted`` state in any of the bullets above.
+  To achieve (eventual) transition into the ``halted`` state, ``debug_req_i`` must be kept asserted until ``debug_halted_o`` has been asserted.
 
 .. _ebreak_behavior:
 

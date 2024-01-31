@@ -62,8 +62,6 @@ package cv32e40s_pkg;
 
 parameter ALU_OP_WIDTH = 6;
 
-  // TODO:low Could a smarter encoding be used here?
-
 // Note: Certain bits in alu_opcode_e are referred to directly in the ALU:
 //
 // - Bit 2: Right shift?
@@ -89,7 +87,6 @@ typedef enum logic [ALU_OP_WIDTH-1:0]
  ALU_B_ORN    = 6'b101110, // funct3 = 110, zbb
  ALU_B_ANDN   = 6'b101111, // funct3 = 111, zbb
 
- // Comparisons // todo: comparator operators do not need to be part of ALU operators
  ALU_EQ       = 6'b010000, // funct3 = 000
  ALU_NE       = 6'b010001, // funct3 = 001
  ALU_SLT      = 6'b011010, // funct3 = 010, signed(3)
@@ -169,7 +166,7 @@ typedef enum logic [DIV_OP_WIDTH-1:0]
  } div_opcode_e;
 
 // FSM state encoding
-typedef enum logic [2:0] { RESET, BOOT_SET, FUNCTIONAL, SLEEP, DEBUG_TAKEN} ctrl_state_e;
+typedef enum logic [1:0] { RESET, FUNCTIONAL, SLEEP, DEBUG_TAKEN} ctrl_state_e;
 
 // Debug FSM state encoding
 // State encoding done one-hot to ensure that debug_havereset_o, debug_running_o, debug_halted_o
@@ -275,7 +272,6 @@ typedef enum logic[11:0] {
   CSR_MTVAL          = 12'h343,
   CSR_MIP            = 12'h344,
   CSR_MNXTI          = 12'h345,
-  CSR_MINTSTATUS     = 12'h346,
   CSR_MINTTHRESH     = 12'h347,
   CSR_MSCRATCHCSW    = 12'h348,
   CSR_MSCRATCHCSWL   = 12'h349,
@@ -374,9 +370,7 @@ typedef enum logic[11:0] {
   CSR_TSELECT        = 12'h7A0,
   CSR_TDATA1         = 12'h7A1,
   CSR_TDATA2         = 12'h7A2,
-  CSR_TDATA3         = 12'h7A3,
   CSR_TINFO          = 12'h7A4,
-  CSR_TCONTROL       = 12'h7A5,
 
   // Debug/trace
   CSR_DCSR           = 12'h7B0,
@@ -457,44 +451,52 @@ typedef enum logic[11:0] {
   CSR_MIMPID         = 12'hF13,
   CSR_MHARTID        = 12'hF14,
   CSR_MCONFIGPTR     = 12'hF15,
+  CSR_MINTSTATUS     = 12'hFB1,
 
   // Xsecure custom CSRs
   CSR_CPUCTRL        = 12'hBF0,
   CSR_SECURESEED0    = 12'hBF9,
   CSR_SECURESEED1    = 12'hBFA,
   CSR_SECURESEED2    = 12'hBFC
+
+
 } csr_num_e;
 
 // CSR Bit Implementation Masks
-parameter CSR_JVT_MASK          = 32'hFFFFFC00;
-parameter CSR_DCSR_MASK         = 32'b1111_0000_0000_0000_1000_1001_1100_0111; // NMI bit taken from ctrl_fsm
+// A mask bit of '1' means a flipflop is implemented.
+parameter CSR_JVT_MASK          = 32'hFFFFFFC0;
+parameter CSR_DCSR_MASK         = 32'b0000_0000_0000_0000_1001_1101_1100_0111; // NMI bit taken from ctrl_fsm
 parameter CSR_MEPC_MASK         = 32'hFFFFFFFE;
 parameter CSR_DPC_MASK          = 32'hFFFFFFFE;
 //        CSR_MIE_MASK          = IRQ_MASK;
 parameter CSR_MSTATUS_MASK      = 32'b0000_0000_0010_0010_0001_1000_1000_1000;
-parameter CSR_MTVEC_BASIC_MASK  = 32'hFFFFFF81;
-parameter CSR_MTVEC_CLIC_MASK   = 32'hFFFFFF83;
-parameter CSR_MTVT_MASK         = 32'hFFFFFFE0;
 parameter CSR_MINTSTATUS_MASK   = 32'hFF000000;
 parameter CSR_MSCRATCH_MASK     = 32'hFFFFFFFF;
 parameter CSR_CPUCTRL_MASK      = 32'h000F001F;
 parameter CSR_PMPNCFG_MASK      = 8'hFF;
 parameter CSR_PMPADDR_MASK      = 32'hFFFFFFFF;
 parameter CSR_MSECCFG_MASK      = 32'h00000007;
-parameter CSR_PRV_LVL_MASK      = 32'hFFFFFFFF;
+parameter CSR_PRV_LVL_MASK      = 32'h00000003;
 parameter CSR_MSTATEEN0_MASK    = 32'h00000004;
+parameter CSR_DSCRATCH0_MASK    = 32'hFFFFFFFF;
+parameter CSR_DSCRATCH1_MASK    = 32'hFFFFFFFF;
+parameter CSR_MINTTHRESH_MASK   = 32'h000000FF;
+parameter CSR_CLIC_MCAUSE_MASK  = 32'b1111_1000_1111_1111_0000_0111_1111_1111;
+parameter CSR_BASIC_MCAUSE_MASK = 32'b1000_0000_0000_0000_0000_0111_1111_1111;
+parameter CSR_CLIC_MTVEC_MASK   = 32'hFFFFFF80;
+parameter CSR_BASIC_MTVEC_MASK  = 32'hFFFFFF81;
+
 
 // CSR operations
 
-parameter CSR_OP_WIDTH = 3;
+parameter CSR_OP_WIDTH = 2;
 
 typedef enum logic [CSR_OP_WIDTH-1:0]
 {
- CSR_OP_READ  = 3'b000,
- CSR_OP_WRITE = 3'b001,
- CSR_OP_SET   = 3'b010,
- CSR_OP_CLEAR = 3'b011,
- CSR_OP_CSRRW = 3'b100
+ CSR_OP_READ  = 2'b00,
+ CSR_OP_WRITE = 2'b01,
+ CSR_OP_SET   = 2'b10,
+ CSR_OP_CLEAR = 2'b11
 } csr_opcode_e;
 
 // CSR interrupt pending/enable bits
@@ -539,7 +541,6 @@ typedef enum logic[1:0] {
   PRIV_LVL_U = 2'b00
 } privlvl_t;
 
-parameter privlvl_t PRIV_LVL_LOWEST = PRIV_LVL_U;
 
 // Struct used for setting privilege lelve
 typedef struct packed {
@@ -573,6 +574,14 @@ parameter MCAUSE_MPIE_BIT      = 27;
 parameter MCAUSE_MPP_BIT_LOW   = 28;
 parameter MCAUSE_MPP_BIT_HIGH  = 29;
 
+parameter MTVEC_MODE_BIT_HIGH  = 1;
+parameter MTVEC_MODE_BIT_LOW   = 0;
+
+parameter DCSR_EBREAKU_BIT     = 12;
+parameter DCSR_PRV_BIT_HIGH    = 1;
+parameter DCSR_PRV_BIT_LOW     = 0;
+
+
 // misa
 parameter logic [1:0] MXL = 2'd1; // M-XLEN: XLEN in M-Mode for RV32
 
@@ -583,9 +592,7 @@ typedef struct packed {
   logic [5: 0] mode;
 } jvt_t;
 
-// todo: Might change this is Zc TG changes spec to allow some
-// bits of the jvt.base to be WARL
-parameter JVT_ADDR_WIDTH = 22;
+parameter JVT_ADDR_WIDTH = 26;
 
 typedef struct packed {
   logic         sd;     // State dirty
@@ -635,6 +642,7 @@ typedef enum logic[3:0] {
 
 // Trigger types
 typedef enum logic [3:0] {
+  TTYPE_MCONTROL  = 4'h2,
   TTYPE_ETRIGGER  = 4'h5,
   TTYPE_MCONTROL6 = 4'h6,
   TTYPE_DISABLED  = 4'hF
@@ -692,8 +700,10 @@ typedef struct packed {
 
 
 parameter dcsr_t DCSR_RESET_VAL = '{
-  xdebugver : XDEBUGVER_STD,
+  xdebugver:  XDEBUGVER_STD,
+  stopcount:  1'b1,
   cause:      DBG_CAUSE_NONE,
+  mprven:     1'b1,
   prv:        PRIV_LVL_M,
   default:    '0};
 
@@ -731,24 +741,73 @@ parameter mstatus_t MSTATUS_RESET_VAL = '{
   zero0   : 'b0,
   default : 'b0};
 
+parameter mcause_t MCAUSE_CLIC_RESET_VAL = '{
+  mpp     : PRIV_LVL_M,
+  default: 'b0};
+
+parameter mcause_t MCAUSE_BASIC_RESET_VAL = '{
+    default: 'b0};
+
+parameter JVT_RESET_VAL                = 32'd0;
+parameter MSCRATCH_RESET_VAL           = 32'd0;
+parameter MEPC_RESET_VAL               = 32'd0;
+parameter DPC_RESET_VAL                = 32'd0;
+parameter DSCRATCH0_RESET_VAL          = 32'd0;
+parameter DSCRATCH1_RESET_VAL          = 32'd0;
+parameter MINTTHRESH_RESET_VAL         = 32'd0;
+parameter MIE_BASIC_RESET_VAL          = 32'd0;
+parameter MSTATEEN0_RESET_VAL          = 32'd0;
+
 parameter logic [31:0] TDATA1_RST_VAL = {
-  TTYPE_MCONTROL6,       // type    : address/data match
+  TTYPE_MCONTROL,        // type    : address/data match
   1'b1,                  // dmode   : access from D mode only
-  2'b00,                 // zero  26:25
-  3'b000,                // zero, vs, vu, hit 24:22
-  1'b0,                  // zero, select 21
-  1'b0,                  // zero, timing 20
-  4'b0000,               // zero, size (match any sie) 19:16
-  4'b0001,               // action, WARL(1), enter debug 15:12
-  1'b0,                  // zero, chain 11
+  6'b000000,             // maskmax  : hardwired to zero
+  1'b0,                  // hit     : hardwired to zero
+  1'b0,                  // select  : hardwired to zero, only address matching
+  1'b0,                  // timing  : hardwired to zero, only 'before' timing
+  2'b00,                 // sizelo  : hardwired to zero, match any size
+  4'b0001,               // action  : enter debug on match
+  1'b0,                  // chain   : hardwired to zero
   4'b0000,               // match, WARL(0,2,3) 10:7
-  1'b0,                  // M  6
-  1'b0,                  // zero 5
-  1'b0,                  // zero, S 4
+  1'b0,                  // m       : match in machine mode
+  1'b0,                  //         : hardwired to zero
+  1'b0,                  // s       : hardwired to zer0
   1'b0,                  // zero, U 3
   1'b0,                  // EXECUTE 2
   1'b0,                  // STORE 1
   1'b0};                 // LOAD 0
+
+  // Bit position parameters for MCONTROL and MCONTROL6
+  parameter MCONTROL_6_UNCERTAIN   = 26;
+  parameter MCONTROL_6_HIT1        = 25;
+  parameter MCONTROL_6_HIT0        = 22;
+  parameter MCONTROL2_6_MATCH_HIGH = 10;
+  parameter MCONTROL2_6_MATCH_LOW  = 7;
+  parameter MCONTROL2_6_M          = 6;
+  parameter MCONTROL_6_UNCERTAINEN = 5;
+  parameter MCONTROL2_6_U          = 3;
+  parameter MCONTROL2_6_EXECUTE    = 2;
+  parameter MCONTROL2_6_STORE      = 1;
+  parameter MCONTROL2_6_LOAD       = 0;
+
+
+  parameter ETRIGGER_M = 9;
+  parameter ETRIGGER_U = 6;
+
+  // Bit position parameters for trigger type within tdata1
+  parameter TDATA1_TTYPE_HIGH = 31;
+  parameter TDATA1_TTYPE_LOW  = 28;
+
+  // Struct for carrying read/write hazard signals
+  typedef struct packed {
+    logic impl_re_ex; // Implicit CSR read in EX
+    logic impl_wr_ex; // Implicit CSR write in EX (will perform write in WB)
+    logic expl_re_ex; // Conservative, using flopped instr_valid
+    logic expl_we_wb; // Conservative, using flopped instr_valid
+    csr_num_e expl_raddr_ex;
+    csr_num_e expl_waddr_wb;
+  } csr_hz_t;
+
 
 ///////////////////////////////////////////////
 //   ___ ____    ____  _                     //
@@ -761,6 +820,12 @@ parameter logic [31:0] TDATA1_RST_VAL = {
 
 // Enable Security Features
 parameter SECURE = 1;
+
+// Enable User Mode
+parameter bit USER = SECURE;
+
+// Lowest supported privilege level
+parameter privlvl_t PRIV_LVL_LOWEST = (USER) ? PRIV_LVL_U : PRIV_LVL_M;
 
 // Register file read/write ports
 parameter REGFILE_NUM_WRITE_PORTS = 1;
@@ -820,13 +885,11 @@ typedef enum logic[1:0] {
                     } alu_op_b_mux_e;
 
 // Immediate b selection
-typedef enum logic[2:0] {
-                         IMMB_I      = 3'b000,
-                         IMMB_S      = 3'b001,
-                         IMMB_U      = 3'b010,
-                         IMMB_PCINCR = 3'b011,
-                         IMMB_CIW    = 3'b100,
-                         IMMB_CL    = 3'b101
+typedef enum logic[1:0] {
+                         IMMB_I      = 2'b00,
+                         IMMB_S      = 2'b01,
+                         IMMB_U      = 2'b10,
+                         IMMB_PCINCR = 2'b11
                          } imm_b_mux_e;
 
 // Operand c selection
@@ -838,9 +901,10 @@ typedef enum logic[1:0] {
 
 // Control transfer (branch/jump) target mux
 typedef enum logic[1:0] {
-                         CT_JAL  = 2'b01,
-                         CT_JALR = 2'b10,
-                         CT_BCH  = 2'b11
+                         CT_TBLJMP = 2'b00,
+                         CT_JAL    = 2'b01,
+                         CT_JALR   = 2'b10,
+                         CT_BCH    = 2'b11
                          } bch_jmp_mux_e;
 
 // Decoder control signals
@@ -874,6 +938,7 @@ typedef struct packed {
   logic                              sys_dret_insn;
   logic                              sys_ebrk_insn;
   logic                              sys_ecall_insn;
+  logic                              sys_fence_insn;
   logic                              sys_fencei_insn;
   logic                              sys_mret_insn;
   logic                              sys_wfi_insn;
@@ -910,6 +975,7 @@ typedef struct packed {
                                                           sys_dret_insn                : 1'b0,
                                                           sys_ebrk_insn                : 1'b0,
                                                           sys_ecall_insn               : 1'b0,
+                                                          sys_fence_insn               : 1'b0,
                                                           sys_fencei_insn              : 1'b0,
                                                           sys_mret_insn                : 1'b0,
                                                           sys_wfi_insn                 : 1'b0,
@@ -952,7 +1018,7 @@ parameter EXC_CAUSE_STORE_FAULT           = 11'h07;
 parameter EXC_CAUSE_ECALL_UMODE           = 11'h08;
 parameter EXC_CAUSE_ECALL_MMODE           = 11'h0B;
 parameter EXC_CAUSE_INSTR_INTEGRITY_FAULT = 11'h19;
-parameter EXC_CAUSE_INSTR_BUS_FAULT       = 11'h30;
+parameter EXC_CAUSE_INSTR_BUS_FAULT       = 11'h18;
 
 parameter INT_CAUSE_LSU_LOAD_FAULT            = 11'h400;
 parameter INT_CAUSE_LSU_STORE_FAULT           = 11'h401;
@@ -1077,6 +1143,9 @@ typedef struct packed {
 } pmp_csr_t;
 
 
+// WPT state machine
+typedef enum logic [1:0] {WPT_IDLE, WPT_MATCH_WAIT, WPT_MATCH_RESP} wpt_state_e;
+
 // OBI bus and internal data types
 
 parameter INSTR_ADDR_WIDTH = 32;
@@ -1104,7 +1173,7 @@ typedef struct packed {
   logic [1:0]                  memtype;
   logic [2:0]                  prot;
   logic                        dbg;
-  logic [11:0]                 achk;
+  logic [12:0]                 achk;
   logic                        integrity; // PMA integrity attribute, will not be passed onto OBI
 } obi_inst_req_t;
 
@@ -1124,13 +1193,13 @@ typedef struct packed {
   logic [1:0]                     memtype;
   logic [2:0]                     prot;
   logic                           dbg;
-  logic [11:0]                    achk;
+  logic [12:0]                    achk;
   logic                           integrity; // PMA integrity attribute, will not be passed onto OBI
 } obi_data_req_t;
 
 typedef struct packed {
   logic [DATA_DATA_WIDTH-1:0] rdata;
-  logic                       err;
+  logic [1:0]                 err; // bit0: Error from bus, bit1: 0 for load, 1 for store
   logic [4:0]                 rchk;
   logic                       integrity_err;    // Calculated in data_obi_interface and appended to struct upon rvalid
   logic                       integrity;   // Tracked through data_obi_interface and appended to struct upon rvalid
@@ -1146,8 +1215,8 @@ typedef struct packed {
 parameter inst_resp_t INST_RESP_RESET_VAL = '{
   // Setting rdata[1:0] to 2'b11 to easily assert that all
   // instructions in ID are uncompressed
-  bus_resp    : '{rdata: 32'h3, err: 1'b0, rchk: 5'b0,integrity_err: 1'b0, integrity: 1'b0},
-  mpu_status  : MPU_OK
+  bus_resp     : '{rdata: 32'h3, err: 1'b0, rchk: 5'b0,integrity_err: 1'b0, integrity: 1'b0},
+  mpu_status   : MPU_OK
 };
 
 // Reset value for the obi_inst_req_t type
@@ -1156,14 +1225,15 @@ parameter obi_inst_req_t OBI_INST_REQ_RESET_VAL = '{
   memtype   : 'h0,
   prot      : {PRIV_LVL_M, 1'b0},
   dbg       : 1'b0,
-  achk      : 12'hFFF,
+  achk      : 13'h1FFF,
   integrity : 1'b0
 };
 
-// Data transfer bundeled with MPU status
+// Data transfer bundeled with MPU status and watchpoint trigger match
 typedef struct packed {
   obi_data_resp_t             bus_resp;
   mpu_status_e                mpu_status;
+  logic [31:0]                wpt_match;
 } data_resp_t;
 
 // LSU transaction
@@ -1184,7 +1254,6 @@ typedef struct packed {
 } outstanding_t;
 
 // Instruction meta data
-// TODO: consider moving other instruction meta data to this struct. e.g. xxx_insn, pc, etc (but don't move stuff here that is specific to one functional unit)
 typedef struct packed
 {
   logic        dummy;
@@ -1193,17 +1262,8 @@ typedef struct packed
   logic        clic_ptr;   // "True" CLIC pointer due to taking a CLIC SHV interrupt
   logic        mret_ptr;   // CLIC pointer due to an mret restarting pointer fetch
   logic        tbljmp;
+  logic        pushpop;    // Operation is part of a push/pop sequence.
 } instr_meta_t;
-
-// Struct for carrying eXtension interface information
-typedef struct packed
-{
-  logic        exception;       // Can offloaded ins cause an exception?
-  logic        loadstore; // Is offloaded ins a load or store?
-  logic        dualwrite; // Will oflfoaded ins cause a dual writeback?
-  logic [31:0] id;        // ID of offloaded ins
-  logic        accepted;  // Was the offloaded instruction accepted or not?
-} xif_meta_t;
 
 typedef struct packed
 {
@@ -1211,6 +1271,7 @@ typedef struct packed
   logic        integrity_err;
   logic        store;
 } lsu_err_wb_t;
+
 
 // IF/ID pipeline
 typedef struct packed {
@@ -1221,8 +1282,7 @@ typedef struct packed {
   logic [15:0] compressed_instr;
   logic        illegal_c_insn;
   privlvl_t    priv_lvl;
-  logic        trigger_match;
-  logic [31:0] xif_id;           // ID of offloaded instruction
+  logic [31:0] trigger_match;
   logic [31:0] ptr;              // Flops to hold 32-bit pointer
   logic        first_op;         // First part of multi operation instruction
   logic        last_op;          // Last part of multi operation instruction
@@ -1269,6 +1329,7 @@ typedef struct packed {
   logic         sys_dret_insn;
   logic         sys_ebrk_insn;
   logic         sys_ecall_insn;
+  logic         sys_fence_insn;
   logic         sys_fencei_insn;
   logic         sys_mret_insn;
   logic         sys_wfi_insn;
@@ -1277,24 +1338,21 @@ typedef struct packed {
   logic         illegal_insn;
 
   // Trigger match on insn
-  logic         trigger_match;
+  logic [31:0]  trigger_match;    // only DBG_NUM_TRIGGERS are implemented, free bits will be tied off
 
   // Register write control
   logic         rf_we;
   rf_addr_t     rf_waddr;
 
   // Signals for exception handling etc passed on for evaluation in WB stage
+  logic [31:0]  pc_next;          // PC for the following instruction
   logic [31:0]  pc;
   inst_resp_t   instr;            // Contains instruction word (may be compressed),bus error status and MPU status
   instr_meta_t  instr_meta;
   logic         instr_valid;      // instruction in EX is valid
 
-  // Priviledge level
+  // Privilege level
   privlvl_t    priv_lvl;
-
-  // eXtension interface
-  logic         xif_en;           // Instruction has been offloaded via eXtension interface
-  xif_meta_t    xif_meta;         // xif meta struct
 
   logic         first_op;         // First part of multi operation instruction
   logic         last_op;          // Last part of multi operation instruction
@@ -1325,7 +1383,7 @@ typedef struct packed {
   logic         lsu_en;
 
   // Trigger match on insn
-  logic         trigger_match;
+  logic [31:0]  trigger_match;    // only DBG_NUM_TRIGGERS are implemented, free bits will be tied off
 
   // Signals for exception handling etc
   logic [31:0]  pc;
@@ -1334,23 +1392,24 @@ typedef struct packed {
   logic         instr_valid;      // instruction in WB is valid
   logic         illegal_insn;
 
+  privlvl_t     priv_lvl;
+
   logic         sys_en;
   logic         sys_dret_insn;
   logic         sys_ebrk_insn;
   logic         sys_ecall_insn;
+  logic         sys_fence_insn;
   logic         sys_fencei_insn;
   logic         sys_mret_insn;
   logic         sys_wfi_insn;
   logic         sys_wfe_insn;
 
-  // eXtension interface
-  logic         xif_en;           // Instruction has been offloaded via eXtension interface
-  xif_meta_t    xif_meta;         // xif meta struct
-
   logic         first_op;         // First part of multi operation instruction
   logic         last_op;          // Last part of multi operation instruction
   logic         last_sec_op;      // Last part of SECURE jump/mret/branch. (NB: mret may have last_sec_op && !last_op in case it caused a pointer fetch)
   logic         abort_op;         // Instruction will be aborted due to known exceptions or trigger matches
+
+  logic         csr_impl_wr;      // A CSR instruction is doing an implicit write
 } ex_wb_pipe_t;
 
 // Performance counter events
@@ -1366,14 +1425,14 @@ typedef struct packed {
   jalr_fw_mux_e jalr_fw_mux_sel;        // Jump target forward mux sel
   logic         jalr_stall;             // Stall due to JALR hazard (JALR used result from EX or LSU result in WB)
   logic         load_stall;             // Stall due to load operation
-  logic         csr_stall;
-  logic         wfi_wfe_stall;
+  logic         csr_stall_id;
+  logic         csr_stall_ex;
+  logic         sleep_stall;            // Stall ID due to sleep (e.g. WFI, WFE) instruction in EX
   logic         mnxti_id_stall;         // Stall ID due to mnxti CSR access in EX
   logic         mnxti_ex_stall;         // Stall EX due to LSU instruction in WB
   logic         minstret_stall;         // Stall due to minstret/h read in EX
   logic         deassert_we;            // Deassert write enable and special insn bits
   logic         id_stage_abort;         // Same signal as deassert_we, with better name for use in the controller.
-  logic         xif_exception_stall;    // Stall (EX) if xif insn in WB can cause an exception
   logic         irq_enable_stall;       // Stall (EX) if an interrupt may be enabled by the instruction in WB.
 } ctrl_byp_t;
 
@@ -1390,11 +1449,10 @@ typedef struct packed {
   logic        allow_dummy_instr;     // Allow dummy instruction insertion
 
   // To WB stage
-  logic        block_data_addr;       // To LSU to prevent data_addr_wb_i updates between error and taken NMI
   logic [4:0]  mtvec_pc_mux;          // Id of taken basic mode irq (to IF, EXC_PC_MUX, zeroed if mtvec_mode==0)
   logic [9:0]  mtvt_pc_mux;           // Id of taken CLIC irq (to IF, EXC_PC_MUX, zeroed if not shv)
                                       // Setting to 11 bits (max), unused bits will be tied off
-  logic [7:0]  jvt_pc_mux;            // Index for table jumps
+  logic [4:0]  nmi_mtvec_index;       // Offset into mtvec when taking an NMI
 
   logic        irq_ack;               // Irq has been taken
   logic [9:0]  irq_id;                // Id of taken irq. Max width (1024 interrupts), unused bits will be tied off
@@ -1408,7 +1466,9 @@ typedef struct packed {
   logic        debug_mode;             // Flag signalling we are in debug mode, valid for ID, EX and WB
   logic [2:0]  debug_cause;            // cause of debug entry
   logic        debug_csr_save;         // Update debug CSRs
-  logic        debug_wfi_wfe_no_sleep; // Debug prevents core from sleeping after WFI
+  logic [31:0] debug_trigger_hit;      // Mask for hit bits for mcontrol6 triggers
+  logic        debug_trigger_hit_update; // Signal that hit bits should be updated
+  logic        debug_no_sleep;         // Debug prevents core from sleeping after WFI, etc.
   logic        debug_havereset;        // Signal to external debugger that we have reset
   logic        debug_running;          // Signal to external debugger that we are running (not in debug)
   logic        debug_halted;           // Signal to external debugger that we are halted (in debug mode)
@@ -1425,10 +1485,8 @@ typedef struct packed {
   logic [31:0] pipe_pc;             // PC from pipeline
   mcause_t     csr_cause;           // CSR cause (saves to mcause CSR)
   logic        csr_restore_mret;    // Restore CSR due to mret
-  logic        csr_restore_mret_ptr; // Restore CSR due to mret followed by CLIC
   logic        csr_restore_dret;    // Restore CSR due to dret
   logic        csr_save_cause;      // Update CSRs
-  logic        csr_clear_minhv;     // Clear the mcause.minhv field
   logic        pending_nmi;         // An NMI is pending (for dcsr.nmip)
 
   logic        mret_jump_id;        // Jump from ID stage due to MRET
@@ -1455,23 +1513,42 @@ typedef struct packed {
   logic        kill_ex; // Kill EX stage
   logic        kill_wb; // Kill WB stage
 
-  // Kill signal for xif_commit_if
-  logic        kill_xif; // Kill (attempted) offloaded instruction
-
   // Signal that an exception is in WB
   logic        exception_in_wb;
+  logic [10:0] exception_cause_wb;
 } ctrl_fsm_t;
 
   ////////////////////////////////////////
   // Resolution functions
+
 
   function automatic privlvl_t dcsr_prv_resolve
   (
     privlvl_t   current_value,
     logic [1:0] next_value
   );
-    // dcsr.prv is WARL(0x0, 0x3)
-    return ((next_value != PRIV_LVL_M) && (next_value != PRIV_LVL_U)) ? current_value : privlvl_t'(next_value);
+    if (USER) begin
+      // dcsr.prv is WARL(0x0, 0x3)
+      return ((next_value != PRIV_LVL_M) && (next_value != PRIV_LVL_U)) ? current_value : privlvl_t'(next_value);
+    end else begin
+      // dcsr.prv is WARL(0x3)
+      return PRIV_LVL_M;
+    end
+  endfunction
+
+  function automatic logic dcsr_ebreaku_resolve
+  (
+    logic       current_value,
+    logic       next_value
+  );
+    if (USER) begin
+      // dcsr.ebreaku is WARL
+      return next_value;
+    end else begin
+      // dcsr.ebreaku is WARL(0x0)
+      return 1'b0;
+    end
+
   endfunction
 
   function automatic logic [1:0] mstatus_mpp_resolve
@@ -1479,10 +1556,144 @@ typedef struct packed {
     logic [1:0] current_value,
     logic [1:0] next_value
   );
-    // mstatus.mpp is WARL(0x0, 0x3)
-    return ((next_value != PRIV_LVL_M) && (next_value != PRIV_LVL_U)) ? current_value : next_value;
+    if (USER) begin
+      // mstatus.mpp is WARL(0x0, 0x3)
+      return ((next_value != PRIV_LVL_M) && (next_value != PRIV_LVL_U)) ? current_value : next_value;
+    end else begin
+      // mstatus.mpp is WARL(0x3)
+      return PRIV_LVL_M;
+    end
+
   endfunction
 
+  function automatic logic [1:0] mcause_mpp_resolve
+  (
+    logic [1:0] current_value,
+    logic [1:0] next_value
+  );
+    if (USER) begin
+      // mcause.mpp is WARL(0x0, 0x3)
+      return ((next_value != PRIV_LVL_M) && (next_value != PRIV_LVL_U)) ? current_value : next_value;
+    end else begin
+      // mcause.mpp is WARL(0x3)
+      return PRIV_LVL_M;
+    end
+
+  endfunction
+
+  function automatic logic mstatus_mprv_resolve
+  (
+    logic current_value,
+    logic next_value
+  );
+    if (USER) begin
+      // mstatus.mprv is is RW
+      return next_value;
+    end else begin
+      // mstatus.mprv is WARL(0x0)
+      return 1'b0;
+    end
+  endfunction
+
+  function automatic logic mstatus_tw_resolve
+  (
+   logic current_value,
+   logic next_value
+  );
+    if (USER) begin
+      // mstatus.tw is is RW
+      return next_value;
+    end else begin
+      return 1'b0;
+    end
+  endfunction
+
+  function automatic logic [3:0] mcontrol2_6_match_resolve
+  (
+    logic [3:0] next_value
+  );
+    return ((next_value != 4'h0) && (next_value != 4'h2) && (next_value != 4'h3)) ? 4'h0 : next_value;
+  endfunction
+
+  function automatic logic mcontrol2_6_u_resolve
+  (
+    logic next_value
+  );
+    if (USER) begin
+      // mcontrol6.u is WARL
+      return next_value;
+    end else begin
+      // mcontrol2/6.u is WARL(0x0)
+      return 1'b0;
+    end
+  endfunction
+
+  function automatic logic mcontrol6_uncertain_resolve
+  (
+    logic next_value
+  );
+    // mcontrol6.uncertain is WARL(0x0)
+    return 1'b0;
+  endfunction
+
+  function automatic logic mcontrol6_uncertainen_resolve
+  (
+    logic next_value
+  );
+    // mcontrol6.uncertainen is WARL(0x0)
+    return 1'b0;
+  endfunction
+
+  function automatic logic [1:0] mcontrol6_hit_resolve
+  (
+    logic [1:0] current_value,
+    logic [1:0] next_value
+  );
+    // mcontrol6.hit is WARL(0x0, 0x1)
+    return ((next_value != 2'b00) && (next_value != 2'b01)) ? current_value : next_value;
+  endfunction
+
+  function automatic logic etrigger_u_resolve
+  (
+    logic next_value
+  );
+    if (USER) begin
+      // etrigger.u is WARL
+      return next_value;
+    end else begin
+      // etrigger.u is WARL(0x0)
+      return 1'b0;
+    end
+  endfunction
+
+  function automatic logic[1:0] mtvec_mode_clint_resolve
+  (
+    logic [1:0] current_value,
+    logic [1:0] next_value
+  );
+    // mtvec.mode is WARL(0,1) in CLINT mode
+    return ((next_value != 2'b00) && (next_value != 2'b01)) ? current_value : next_value;
+  endfunction
+
+  function automatic logic[1:0] mtvec_mode_clic_resolve
+  (
+    logic [1:0] current_value,
+    logic [1:0] next_value
+  );
+    // mtvec.mode is WARL(0x3) in CLIC mode
+    return 2'b11;
+  endfunction
+
+  // Function for setting next-value for CSRs
+  // Uses a mask and reset value to allow nom-implemented (no flipflop) bits to be either 0 or 1.
+  function automatic logic [31:0] csr_next_value
+  (
+      logic [31:0] wdata,
+      logic [31:0] mask,
+      logic [31:0] reset_value
+  );
+      return (wdata & mask) | (reset_value & ~mask);
+  endfunction
   ///////////////////////////
   //                       //
   //    /\/\ (_)___  ___   //

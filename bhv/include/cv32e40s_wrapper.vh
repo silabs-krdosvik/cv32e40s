@@ -30,6 +30,9 @@
 .rvfi_valid(),\
 .rvfi_order(),\
 .rvfi_insn(),\
+.rvfi_instr_prot(),\
+.rvfi_instr_memtype(),\
+.rvfi_instr_dbg(),\
 .rvfi_trap(),\
 .rvfi_halt(),\
 .rvfi_intr(),\
@@ -55,6 +58,12 @@
 .rvfi_mem_wmask(),\
 .rvfi_mem_rdata(),\
 .rvfi_mem_wdata(),\
+.rvfi_mem_exokay(),\
+.rvfi_mem_err(),\
+.rvfi_mem_prot(),\
+.rvfi_mem_atop(),\
+.rvfi_mem_memtype(),\
+.rvfi_mem_dbg(),\
 \
 .rvfi_gpr_rdata(),\
 .rvfi_gpr_rmask(),\
@@ -137,10 +146,6 @@
 .rvfi_csr_mscratchcswl_wmask(),\
 .rvfi_csr_mscratchcswl_rdata(),\
 .rvfi_csr_mscratchcswl_wdata(),\
-.rvfi_csr_mclicbase_rmask(),\
-.rvfi_csr_mclicbase_wmask(),\
-.rvfi_csr_mclicbase_rdata(),\
-.rvfi_csr_mclicbase_wdata(),\
 .rvfi_csr_tselect_rmask(),\
 .rvfi_csr_tselect_wmask(),\
 .rvfi_csr_tselect_rdata(),\
@@ -153,10 +158,6 @@
 .rvfi_csr_tinfo_wmask(),\
 .rvfi_csr_tinfo_rdata(),\
 .rvfi_csr_tinfo_wdata(),\
-.rvfi_csr_tcontrol_rmask(),\
-.rvfi_csr_tcontrol_wmask(),\
-.rvfi_csr_tcontrol_rdata(),\
-.rvfi_csr_tcontrol_wdata(),\
 .rvfi_csr_dcsr_rmask(),\
 .rvfi_csr_dcsr_wmask(),\
 .rvfi_csr_dcsr_rdata(),\

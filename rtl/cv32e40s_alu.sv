@@ -48,6 +48,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 module cv32e40s_alu import cv32e40s_pkg::*;
+#(
+  parameter b_ext_e B_EXT  = B_NONE
+)
 (
   input  alu_opcode_e       operator_i,
   input  logic [31:0]       operand_a_i,
@@ -67,6 +70,8 @@ module cv32e40s_alu import cv32e40s_pkg::*;
   input logic [5:0]         div_shift_amt_i,
   output logic [31:0]       div_op_b_shifted_o
 );
+
+  localparam RV32B_ZBS = (B_EXT == ZBA_ZBB_ZBS) || (B_EXT == ZBA_ZBB_ZBC_ZBS);
 
   logic [31:0] operand_a_rev;
   logic [31:0] operand_b_rev;
@@ -156,7 +161,9 @@ module cv32e40s_alu import cv32e40s_pkg::*;
       ALU_B_BSET,
       ALU_B_BCLR,
       ALU_B_BINV : begin
-        shifter_aa = 32'h1;
+        if (RV32B_ZBS) begin
+          shifter_aa = 32'h1;
+        end
       end
       default: ;
     endcase
@@ -172,17 +179,23 @@ module cv32e40s_alu import cv32e40s_pkg::*;
     shifter_tmp = shifter_shamt[0] ? {shifter_tmp[62:0], shifter_tmp[63:63]} : shifter_tmp;
   end
 
-  always_comb begin
-    shifter_result = shifter_tmp[31:0];
+  generate
+    if (RV32B_ZBS) begin : gen_shift_zbs
+      always_comb begin
+        shifter_result = shifter_tmp[31:0];
 
-    unique case (operator_i)
-      ALU_B_BEXT : shifter_result =       32'h1 &  shifter_tmp[31:0];
-      ALU_B_BSET : shifter_result = operand_a_i |  shifter_tmp[31:0];
-      ALU_B_BCLR : shifter_result = operand_a_i & ~shifter_tmp[31:0];
-      ALU_B_BINV : shifter_result = operand_a_i ^  shifter_tmp[31:0];
-      default: ;
-    endcase
-  end
+        unique case (operator_i)
+          ALU_B_BEXT : shifter_result =       32'h1 &  shifter_tmp[31:0];
+          ALU_B_BSET : shifter_result = operand_a_i |  shifter_tmp[31:0];
+          ALU_B_BCLR : shifter_result = operand_a_i & ~shifter_tmp[31:0];
+          ALU_B_BINV : shifter_result = operand_a_i ^  shifter_tmp[31:0];
+          default: ;
+        endcase
+      end
+    end else begin : gen_shift_nozbs
+      assign shifter_result = shifter_tmp[31:0];
+    end
+  endgenerate
 
   assign div_op_b_shifted_o = shifter_tmp[31:0];
 
@@ -281,28 +294,39 @@ module cv32e40s_alu import cv32e40s_pkg::*;
   //                       |___/                                       |_|                                     //
   ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
-  logic [31:0] clmul_op_a;
-  logic [31:0] clmul_op_b;
-
   logic [31:0] clmul_result;
   logic [31:0] clmulr_result;
   logic [31:0] clmulh_result;
 
-  assign clmul_op_a = (operator_i != ALU_B_CLMUL) ? operand_a_rev : operand_a_i;
-  assign clmul_op_b = (operator_i != ALU_B_CLMUL) ? operand_b_rev : operand_b_i;
+  generate
+    if (B_EXT == ZBA_ZBB_ZBC_ZBS) begin: clmul
 
-  always_comb begin
-    clmul_result ='0;
-    for (integer i = 0; i < 32; i++) begin
-      for (integer j = 0; j < i+1; j++) begin
-        clmul_result[i] = clmul_result[i] ^ (clmul_op_a[i-j] & clmul_op_b[j]);
+      logic [31:0] clmul_op_a;
+      logic [31:0] clmul_op_b;
+
+      assign clmul_op_a = (operator_i != ALU_B_CLMUL) ? operand_a_rev : operand_a_i;
+      assign clmul_op_b = (operator_i != ALU_B_CLMUL) ? operand_b_rev : operand_b_i;
+
+      always_comb begin
+        clmul_result ='0;
+        for (integer i = 0; i < 32; i++) begin
+          for (integer j = 0; j < i+1; j++) begin
+            clmul_result[i] = clmul_result[i] ^ (clmul_op_a[i-j] & clmul_op_b[j]);
+          end
+        end
       end
-    end
-  end
 
-  assign clmulr_result = {<<{clmul_result}}; // Reverse for clmulr
-  assign clmulh_result = {1'b0, clmulr_result[31:1]};
+      assign clmulr_result = {<<{clmul_result}}; // Reverse for clmulr
+      assign clmulh_result = {1'b0, clmulr_result[31:1]};
+
+    end else begin: no_clmul
+
+      assign clmul_result  = 32'h0;
+      assign clmulr_result = 32'h0;
+      assign clmulh_result = 32'h0;
+
+    end
+  endgenerate
 
   ////////////////////////////////////////////////////////
   //   ____                 _ _     __  __              //

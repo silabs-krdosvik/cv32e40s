@@ -23,6 +23,9 @@
 module cv32e40s_if_stage_sva
   import uvm_pkg::*;
   import cv32e40s_pkg::*;
+#(
+    parameter bit CLIC = 0
+)
 (
   input  logic          clk,
   input  logic          rst_n,
@@ -36,7 +39,7 @@ module cv32e40s_if_stage_sva
   input privlvl_t       prefetch_priv_lvl,
   input logic           dummy_insert,
   input if_id_pipe_t    if_id_pipe_o,
-  if_c_obi.monitor      m_c_obi_instr_if,
+  cv32e40s_if_c_obi.monitor m_c_obi_instr_if,
   input logic [31:0]    mstateen0_i,
   input logic           seq_tbljmp,
   input  logic          seq_valid,
@@ -44,11 +47,13 @@ module cv32e40s_if_stage_sva
   input  logic          illegal_c_insn,
   input  logic          instr_compressed,
   input  logic          prefetch_is_tbljmp_ptr,
-  input  logic          first_op_nondummy_o,
+  input  logic          first_op_nondummy,
   input  logic          first_op,
   input  logic          last_op_o,
   input  logic          prefetch_is_clic_ptr,
-  input  logic          prefetch_is_mret_ptr
+  input  logic          prefetch_is_mret_ptr,
+  input  logic [31:0]   branch_addr_n,
+  input  logic          ptr_in_if_o
 );
 
   // Check that bus interface transactions are halfword aligned (will be forced word aligned at core boundary)
@@ -107,19 +112,21 @@ module cv32e40s_if_stage_sva
                      dummy_insert && prefetch_resp_valid && !ctrl_fsm_i.kill_if |=> (ctrl_fsm_i.kill_if || (pc_if_o === $past(pc_if_o))))
       else `uvm_error("if_stage", "Prefetcher popped during dummy instruction")
 
-  // Assert that we do not trigger dummy instructions multiple cycles in a row
+  // Assert that we do not trigger dummy instructions multiple instructions in a row (guarantees forward progress)
   // Dummies may have to wait for id_ready, or even if_valid in case of halting IF.
-  // Todo: When/if we use allow_dummy_instr from controller_fsm to guarantee progress,
-  //       this assertion should be updated to check for guaranteed progress
   a_no_back_to_back_dummy_instructions :
     assert property (@(posedge clk) disable iff (!rst_n)
-                     dummy_insert && (if_valid_o && id_ready_i) |=> !dummy_insert)
+                     dummy_insert && (if_valid_o && id_ready_i)  // Dummy inserted and propagated to ID
+                     ##1                                         // One cycle later
+                     (if_valid_o && id_ready_i)[->1]             // Find next IF->ID transition
+                     |->
+                     !dummy_insert)                              // Must NOT be a dummy
       else `uvm_error("if_stage", "Two dummy instructions in a row")
 
   // Assert that we do not trigger dummy instructions when the sequencer is in the middle of a sequence
   a_no_dummy_mid_sequence :
     assert property (@(posedge clk) disable iff (!rst_n)
-                      !first_op_nondummy_o |-> !dummy_insert)
+                      !first_op_nondummy |-> !dummy_insert)
       else `uvm_error("if_stage", "Dummy instruction inserted mid-sequence")
 
 
@@ -157,12 +164,52 @@ module cv32e40s_if_stage_sva
                       dummy_insert |-> (first_op && last_op_o))
         else `uvm_error("if_stage", "Dummies must have first_op and last_opo set.")
 
-  // CLIC pointers and mret pointers can't both be set at the same time
-  a_clic_mret_ptr_unique:
-    assert property (@(posedge clk) disable iff (!rst_n)
-                      (prefetch_is_mret_ptr || prefetch_is_clic_ptr)
+  if (CLIC) begin
+    // CLIC pointers and mret pointers can't both be set at the same time
+    a_clic_mret_ptr_unique:
+      assert property (@(posedge clk) disable iff (!rst_n)
+                        (prefetch_is_mret_ptr || prefetch_is_clic_ptr)
+                        |->
+                        prefetch_is_mret_ptr != prefetch_is_clic_ptr)
+          else `uvm_error("if_stage", "prefetch_is_mret_ptr high at the same time as prefetch_is_clic_ptr.")
+
+    a_aligned_clic_ptr:
+      assert property (@(posedge clk) disable iff (!rst_n)
+                      (ctrl_fsm_i.pc_set_clicv) &&
+                      (ctrl_fsm_i.pc_mux == PC_TRAP_CLICV)
                       |->
-                      prefetch_is_mret_ptr != prefetch_is_clic_ptr)
-        else `uvm_error("if_stage", "prefetch_is_mret_ptr high at the same time as prefetch_is_clic_ptr.")
-endmodule
+                      (branch_addr_n[1:0] == 2'b00))
+          else `uvm_error("if_stage", "Misaligned CLIC pointer")
+
+    a_aligned_mret_ptr:
+      assert property (@(posedge clk) disable iff (!rst_n)
+                      (ctrl_fsm_i.pc_set_clicv) &&
+                      (ctrl_fsm_i.pc_mux == PC_MRET)
+                      |->
+                      (branch_addr_n[1:0] == 2'b00))
+          else `uvm_error("if_stage", "Misaligned mret pointer")
+
+  end
+
+  // Tablejump pointer shall always be aligned
+  a_aligned_tbljmp_ptr:
+      assert property (@(posedge clk) disable iff (!rst_n)
+                      (ctrl_fsm_i.pc_set) &&
+                      (ctrl_fsm_i.pc_mux == PC_TBLJUMP)
+                      |->
+                      (branch_addr_n[1:0] == 2'b00))
+          else `uvm_error("if_stage", "Misaligned tablejump pointer")
+
+  // Once a pointer exits IF, there cannot be another pointer following it.
+  // A possible case could be a SHV CLIC pointer following a tablejump pointer, but
+  // such a scenario would contain at least one bubble since acking the interrupt
+  // would kill the pipeline and redirect the prefetcher to the CLIC table.
+  a_no_ptr_after_ptr:
+    assert property (@(posedge clk) disable iff (!rst_n)
+                    (if_valid_o && id_ready_i) &&
+                    ptr_in_if_o
+                    |=>
+                    !ptr_in_if_o)
+        else `uvm_error("if_stage", "IF stage flagging pointer after pointer has progressed to ID")
+endmodule // cv32e40s_if_stage
 

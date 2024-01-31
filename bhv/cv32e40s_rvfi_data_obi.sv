@@ -15,17 +15,38 @@
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.0
 
 // CV32E40S RVFI data OBI interface (aligns data OBI signals to WB timing)
+// Note that due to complications added by the write buffer (specifically the fact that
+// instructions can retire before a transaction leaves the write buffer), this module
+// monitors transactions going in to the write buffer.
+// Future improvements of this module may include monitoring the OBI signals directly,
+// and have special handling of buffered writes.
 //
 // Contributors: Arjan Bink <arjan.bink@silabs.com>
 
 module cv32e40s_rvfi_data_obi import cv32e40s_pkg::*; import cv32e40s_rvfi_pkg::*;
 (
-  input  logic                          clk,
-  input  logic                          rst_n
+  input logic           clk,
+  input logic           rst_n,
+  input obi_data_req_t  buffer_trans_i,
+  input logic           buffer_trans_valid_i,
+  output obi_data_req_t lsu_data_trans_o,
+  output logic          lsu_data_trans_valid_o
 );
 
-  // DEPTH of the instruction buffer (at least depth of alignment buffer)
-  localparam DEPTH = 4;                                                         // Needs to be power of 2 (due to used pointer arithmetic)
-  localparam int unsigned PTR_WIDTH = $clog2(DEPTH);
+  // Intermediate rotate signal, as direct part-select not supported in all tools
+  logic [63:0] buffer_trans_wdata_ror;
+
+  // Rotate right
+  assign buffer_trans_wdata_ror = {buffer_trans_i.wdata, buffer_trans_i.wdata} >> (8*buffer_trans_i.addr[1:0]);
+
+  // Feed valid through
+  assign lsu_data_trans_valid_o = buffer_trans_valid_i;
+
+  always_comb begin
+    lsu_data_trans_o = buffer_trans_i;
+
+    // Align Memory write data
+    lsu_data_trans_o.wdata = buffer_trans_wdata_ror[31:0];
+  end
 
 endmodule

@@ -29,20 +29,20 @@
 
 module cv32e40s_i_decoder import cv32e40s_pkg::*;
   #(
-    parameter     DEBUG_TRIGGER_EN  = 1,
-    parameter bit SMCLIC            = 1
-    )
-  (
+    parameter bit CLIC              = 1
+)
+(
    // from IF/ID pipeline
    input logic [31:0] instr_rdata_i,
 
-   input  ctrl_fsm_t     ctrl_fsm_i,         // todo:low each use of this signal needs a comment explaining why the signal from the controller is safe to be used with ID timing (probably add comment in FSM)
+   input  logic          tbljmp_i,   // instruction is a tablejump, mapped to JAL
+   input  ctrl_fsm_t     ctrl_fsm_i,
    input  privlvl_t      priv_lvl_i, // Priviledge level for ID stage
    input  mstatus_t      mstatus_i,
    output decoder_ctrl_t decoder_ctrl_o
-   );
+);
 
-   localparam CUSTOM_EXT = 1;
+  localparam CUSTOM_EXT = 1;
 
   always_comb
   begin
@@ -73,7 +73,7 @@ module cv32e40s_i_decoder import cv32e40s_pkg::*;
         decoder_ctrl_o.rf_we                        = 1'b1;             // Write LR
         decoder_ctrl_o.rf_re[0]                     = 1'b0;             // Calculate jump target (= PC + UJ imm)
         decoder_ctrl_o.rf_re[1]                     = 1'b0;             // Calculate jump target (= PC + UJ imm)
-        decoder_ctrl_o.bch_jmp_mux_sel              = CT_JAL;
+        decoder_ctrl_o.bch_jmp_mux_sel              = tbljmp_i ? CT_TBLJMP : CT_JAL; // Zc tablejumps are mapped to JAL, but require their own mux selector for target computation.
       end
 
       OPCODE_JALR: begin // Jump and Link Register
@@ -276,11 +276,10 @@ module cv32e40s_i_decoder import cv32e40s_pkg::*;
 
       OPCODE_FENCE: begin
         decoder_ctrl_o.sys_en = 1'b1;
-        // todo: We may not want the fence handshake for regular (none .i) fences
         unique case (instr_rdata_i[14:12])
-          3'b000: begin // FENCE (FENCE.I instead, a bit more conservative)
+          3'b000: begin // FENCE
             // Flush pipeline
-            decoder_ctrl_o.sys_fencei_insn = 1'b1;
+            decoder_ctrl_o.sys_fence_insn = 1'b1;
           end
 
           3'b001: begin // FENCE.I
@@ -312,6 +311,8 @@ module cv32e40s_i_decoder import cv32e40s_pkg::*;
 
               12'h302:  // mret
               begin
+                // Safe to use ctrl_fsm_i.debug_mode. It is either set to 1 on a debug entry after killing the pipeline or
+                // 0 after a dret which also kills the pipeline.
                 if ((priv_lvl_i != PRIV_LVL_M) || ctrl_fsm_i.debug_mode) begin
                   decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
                 end else begin
@@ -320,6 +321,8 @@ module cv32e40s_i_decoder import cv32e40s_pkg::*;
               end
 
               12'h7b2: begin // dret
+                // Safe to use ctrl_fsm_i.debug_mode. It is either set to 1 on a debug entry after killing the pipeline or
+                // 0 after a dret which also kills the pipeline.
                 if (ctrl_fsm_i.debug_mode) begin
                   decoder_ctrl_o.sys_dret_insn    =  1'b1;
                 end else begin
@@ -333,11 +336,17 @@ module cv32e40s_i_decoder import cv32e40s_pkg::*;
                 // if mstatus.tw == 1
                 // WFI in ID is stalled if CSR writes is present in EX or WB.
                 // - Safe to use mstatus_i.tw
+                // Suppressing WFI in case of ctrl_fsm_i.debug_no_sleep to prevent sleeping when not allowed.
+                // Using ctrl_fsm_i.debug_no sleep is safe because the fan-ins can only change when the pipeline is killed:
+                //  ctrl_fsm_o.debug_no_sleep = debug_mode_q || dcsr_i.step; from the controller_fsm
+                //  debug_mode can only change after debug entry or dret, both kills the pipeline
+                //  dcsr_i.step can only change during debug mode, and will only take effect once outside of debug mode
+                //  which again requires a dret that kills the pipeline.
                 if((priv_lvl_i == PRIV_LVL_U) && mstatus_i.tw) begin
                   decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
                 end else begin
-                  // Suppressing WFI in case of ctrl_fsm_i.debug_wfi_wfe_no_sleep to prevent sleeping when not allowed.
-                  decoder_ctrl_o.sys_wfi_insn = ctrl_fsm_i.debug_wfi_wfe_no_sleep ? 1'b0 : 1'b1;
+                  // Suppressing WFI in case of ctrl_fsm_i.debug_no_sleep to prevent sleeping when not allowed.
+                  decoder_ctrl_o.sys_wfi_insn = ctrl_fsm_i.debug_no_sleep ? 1'b0 : 1'b1;
                 end
               end
 
@@ -346,8 +355,9 @@ module cv32e40s_i_decoder import cv32e40s_pkg::*;
                   if((priv_lvl_i == PRIV_LVL_U) && mstatus_i.tw) begin
                     decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
                   end else begin
-                    // Suppressing WFI in case of ctrl_fsm_i.debug_wfi_wfe_no_sleep to prevent sleeping when not allowed.
-                    decoder_ctrl_o.sys_wfe_insn = ctrl_fsm_i.debug_wfi_wfe_no_sleep ? 1'b0 : 1'b1;
+                    // Suppressing WFE in case of ctrl_fsm_i.debug_no_sleep to prevent sleeping when not allowed.
+                    // See comment about usage of ctrl_fsm_i.debug_no_sleep for the WFI instruction.
+                    decoder_ctrl_o.sys_wfe_insn = ctrl_fsm_i.debug_no_sleep ? 1'b0 : 1'b1;
                   end
                 end else begin
                   decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
@@ -380,28 +390,64 @@ module cv32e40s_i_decoder import cv32e40s_pkg::*;
           // instr_rdata_i[19:14] = rs or immediate value
           // If set or clear with rs==x0 or imm==0, then do not perform a write action
           unique case (instr_rdata_i[13:12])
-            2'b01: begin
-              // Detect true CSRRW with rd != x0 for use with mscratchcsw[l] accesses
-              if ((instr_rdata_i[14] != 1'b1) && (instr_rdata_i[11:7] != 5'b0) && (instr_rdata_i[19:15] != 5'b0)) begin
-                decoder_ctrl_o.csr_op = CSR_OP_CSRRW;
-              end else begin
-                decoder_ctrl_o.csr_op = CSR_OP_WRITE;
-              end
-            end
+            2'b01:   decoder_ctrl_o.csr_op = CSR_OP_WRITE;
             2'b10:   decoder_ctrl_o.csr_op = (instr_rdata_i[19:15] == 5'b0) ? CSR_OP_READ : CSR_OP_SET;
             2'b11:   decoder_ctrl_o.csr_op = (instr_rdata_i[19:15] == 5'b0) ? CSR_OP_READ : CSR_OP_CLEAR;
             default: decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
           endcase
 
-          if (SMCLIC) begin
-            // Detect special case of CSR instruction using immediate values accessing mnxti
-            // Instruction is illegal if immediate bits 0, 2 or 4 are set.
-            if ((instr_rdata_i[31:20] == CSR_MNXTI) && instr_rdata_i[14]) begin
-              if (instr_rdata_i[19] || instr_rdata_i[17] || instr_rdata_i[15]) begin
+          if (SECURE) begin : secure
+            // Restrict which CSR instructions that can be used with SECURESEED*
+            // Only CSRRW with rs1!=x0 will be allowed.
+            if ((instr_rdata_i[31:20] == CSR_SECURESEED0) || (instr_rdata_i[31:20] == CSR_SECURESEED1) || (instr_rdata_i[31:20] == CSR_SECURESEED2)) begin
+              if (instr_rdata_i[14:12] == 3'b001) begin // CSRRW
+                if ((instr_rdata_i[19:15] == 5'b0)) begin
+                  // rs1 is zero, flag instruction as illegal
+                  decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
+                end
+              end else begin
+                // Not a CSRRW instruction, flag illegal
                 decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
               end
             end
-          end // SMCLIC
+          end
+
+          if (CLIC) begin
+            // The mscratchcsw[l] CSRs are only accessible using CSRRW with neither rd nor rs1 set to x0
+            if (((instr_rdata_i[31:20] == CSR_MSCRATCHCSW) && (USER)) || (instr_rdata_i[31:20] == CSR_MSCRATCHCSWL)) begin
+              if (instr_rdata_i[14:12] == 3'b001) begin // CSRRW
+                if ((instr_rdata_i[11:7] == 5'b0) || (instr_rdata_i[19:15] == 5'b0)) begin
+                  // rd or rs1 is zero, flag instruction as illegal
+                  decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
+                end
+              end else begin
+                // Not a CSRRW instruction, flag illegal
+                decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
+              end
+            end
+
+            // Mnxti is only accessible using CSRR (CSRRS rd, csr, x0), CSRRSI or CSRRCI
+            // In addition, when using CSRRSI, if immediate bits 0, 2 or 4 is set the instruction is reserved (illegal in cv32e40s case)
+            if ((instr_rdata_i[31:20] == CSR_MNXTI)) begin
+              if (instr_rdata_i[14:12] == 3'b010) begin // CSRRS
+                // Only legal if rs1 == x0
+                if (instr_rdata_i[19:15] != 5'b0) begin
+                  decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
+                end
+              end else if (instr_rdata_i[14:12] == 3'b110) begin // CSRRSI
+                // Only legal if immediate 0,2 and 4 is zero
+                if (instr_rdata_i[19] || instr_rdata_i[17] || instr_rdata_i[15]) begin
+                  decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
+                end
+              end else begin
+                // Not CSRR or CSRRSI
+                // Illegal unless instruction is CSRRCI
+                if (instr_rdata_i[14:12] != 3'b111) begin
+                  decoder_ctrl_o = DECODER_CTRL_ILLEGAL_INSN;
+                end
+              end
+            end
+          end // CLIC
         end
       end
 

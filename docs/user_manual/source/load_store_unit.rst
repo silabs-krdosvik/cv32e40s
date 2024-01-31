@@ -40,7 +40,7 @@ supported.
   +---------------------------+-----------------+------------------------------------------------------------------------------------------------------------------------------+
   | ``data_we_o``             | output          | Write Enable, high for writes, low for reads. Sent together with ``data_req_o``.                                             |
   +---------------------------+-----------------+------------------------------------------------------------------------------------------------------------------------------+
-  | ``data_achk_o[11:0]``     | output          | Checksum for address phase signals                                                                                           |
+  | ``data_achk_o[12:0]``     | output          | Checksum for address phase signals                                                                                           |
   +---------------------------+-----------------+------------------------------------------------------------------------------------------------------------------------------+
   | ``data_rvalid_i``         | input           | ``data_rvalid_i`` will be high for exactly one cycle to signal the end of the response phase of for both read and write      |
   |                           |                 | transactions. For a read transaction ``data_rdata_i`` holds valid data when ``data_rvalid_i`` is high.                       |
@@ -67,16 +67,15 @@ is therefore performed as two bus transactions for the following scenarios:
 
 In both cases the transfer corresponding to the lowest address is performed first. All other scenarios can be handled with a single bus transaction.
 
-Misaligned transactions are not supported in I/O regions and will result in an exception trap when attempted, see :ref:`exceptions-interrupts`. 
+Misaligned transactions are not supported in I/O regions and will result in an exception trap when attempted, see :ref:`exceptions-interrupts`.
 
 Protocol
 --------
 
 The data bus interface is compliant to the OBI protocol (see [OPENHW-OBI]_ for detailed signal and protocol descriptions).
-The |corev| data interface does not implement
-the following optional OBI signals: auser, wuser, aid, rready, ruser, rid.
-These signals can be thought of as being tied off as specified in the OBI
-specification. The |corev| data interface can cause up to two outstanding
+The |corev| data interface does not implement the following optional OBI signals:
+``auser``, ``wuser``, ``aid``, ``mid``, ``rready``, ``ruser``, ``rid``, ``rreadypar``, ``atop``, ``exokay``.
+These signals can be thought of as being tied off as specified in [OPENHW-OBI]_. The |corev| data interface can cause up to two outstanding
 transactions.
 
 The OBI protocol that is used by the LSU to communicate with a memory works
@@ -94,7 +93,7 @@ granting a request, the memory answers with a ``data_rvalid_i`` set high
 if ``data_rdata_i`` is valid. This may happen one or more cycles after the
 request has been granted. Note that ``data_rvalid_i`` must also be set high
 to signal the end of the response phase for a write transaction (although
-the ``data_rdata_i`` has no meaning in that case). When multiple granted requests 
+the ``data_rdata_i`` has no meaning in that case). When multiple granted requests
 are outstanding, it is assumed that the memory requests will be kept in-order and
 one ``data_rvalid_i`` will be signalled for each of them, in the order they were issued.
 
@@ -160,10 +159,10 @@ The write buffer (when not full) allows |corev| to proceed executing instruction
 .. note::
 
    On the OBI interface ``data_gnt_i`` = 1 and ``data_rvalid_i`` = 1 still need to be signaled for every transfer (as specified in [OPENHW-OBI]_), also for bufferable transfers.
- 
+
 Bus transfers will occur in program order, no matter if transfers are bufferable and non-bufferable.
 Transactions in the write buffer must be completed before the |corev| is able to:
- 
+
  * Retire a ``fence`` instruction
  * Retire a ``fence.i`` instruction
  * Enter SLEEP mode

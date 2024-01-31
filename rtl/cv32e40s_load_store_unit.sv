@@ -26,12 +26,15 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 module cv32e40s_load_store_unit import cv32e40s_pkg::*;
-  #(parameter bit          X_EXT           = 0,
-    parameter int          X_ID_WIDTH      = 4,
-    parameter int          PMP_GRANULARITY = 0,
-    parameter int          PMP_NUM_REGIONS = 0,
-    parameter int          PMA_NUM_REGIONS = 0,
-    parameter pma_cfg_t    PMA_CFG[PMA_NUM_REGIONS-1:0] = '{default:PMA_R_DEFAULT})
+#(parameter int unsigned PMP_GRANULARITY = 0,
+  parameter int          PMP_NUM_REGIONS = 0,
+  parameter int          PMA_NUM_REGIONS = 0,
+  parameter pma_cfg_t    PMA_CFG[PMA_NUM_REGIONS-1:0] = '{default:PMA_R_DEFAULT},
+  parameter int          DBG_NUM_TRIGGERS = 1,
+  parameter bit          DEBUG = 1,
+  parameter logic [31:0] DM_REGION_START = 32'hF0000000,
+  parameter logic [31:0] DM_REGION_END   = 32'hF0003FFF
+)
 (
   input  logic        clk,
   input  logic        rst_n,
@@ -40,7 +43,7 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   input  ctrl_fsm_t   ctrl_fsm_i,
 
   // output to data memory
-  if_c_obi.master     m_c_obi_data_if,
+  cv32e40s_if_c_obi.master m_c_obi_data_if,
 
   // ID/EX pipeline
   input id_ex_pipe_t  id_ex_pipe_i,
@@ -49,15 +52,24 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   output logic        busy_o,
   output logic        interruptible_o,
 
+  // Trigger match input
+  input logic [31:0]  trigger_match_0_i,
+
   // Stage 0 outputs (EX)
   output logic        lsu_split_0_o,            // Misaligned access is split in two transactions (to controller)
   output logic        lsu_first_op_0_o,         // First operation is active in EX
   output logic        lsu_last_op_0_o,          // Last operation is active in EX
 
+  // outputs to trigger module
+  output logic [31:0] lsu_addr_o,
+  output logic        lsu_we_o,
+  output logic [3:0]  lsu_be_o,
+
   // Stage 1 outputs (WB)
   output lsu_err_wb_t lsu_err_1_o,
   output logic [31:0] lsu_rdata_1_o,            // LSU read data
   output mpu_status_e lsu_mpu_status_1_o,       // MPU (PMA) status, response/WB timing. To controller and wb_stage
+  output logic [31:0] lsu_wpt_match_1_o,        // Address match trigger, WB timing.
 
   // PMP CSR's
   input               pmp_csr_t csr_pmp_i,
@@ -80,11 +92,7 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   output logic        integrity_err_o,
   output logic        protocol_err_o,
 
-  input xsecure_ctrl_t   xsecure_ctrl_i,
-
-  // eXtension interface
-  if_xif.cpu_mem        xif_mem_if,
-  if_xif.cpu_mem_result xif_mem_result_if
+  input xsecure_ctrl_t   xsecure_ctrl_i
 );
 
   localparam DEPTH = 2;                           // Maximum number of outstanding transactions
@@ -92,16 +100,34 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
 
   // Transaction request (before aligner)
   trans_req_t     trans;
-
-  // Aligned transaction request (to cv32e40s_mpu)
-  logic           trans_valid; // todo: consider renaming to align_trans_valid, align_trans_ready (if so, do we need trans_valid, trans_ready as well?)
+  logic           trans_valid;
   logic           trans_ready;
-  obi_data_req_t  align_trans;
 
-  // Transaction response interface (from cv32e40s_mpu)
+  // Aligned transaction request (to cv32e40s_wpt)
+  logic           wpt_trans_valid;
+  logic           wpt_trans_ready;
+  logic           wpt_trans_pushpop;
+  obi_data_req_t  wpt_trans;
+
+  // Transaction request to cv32e40s_mpu
+  logic           mpu_trans_valid;
+  logic           mpu_trans_ready;
+  logic           mpu_trans_pushpop;
+  obi_data_req_t  mpu_trans;
+
+  // Transaction response
   logic           resp_valid;
   logic [31:0]    resp_rdata;
   data_resp_t     resp;
+
+  // Transaction response interface (from cv32e40s_wpt)
+  logic           wpt_resp_valid;
+  logic [31:0]    wpt_resp_rdata;
+  data_resp_t     wpt_resp;
+
+  // Transaction response interface (from cv32e40s_mpu)
+  logic           mpu_resp_valid;
+  data_resp_t     mpu_resp;
 
   // Transaction request (from cv32e40s_mpu to cv32e40s_write_buffer)
   logic           buffer_trans_valid;
@@ -113,7 +139,6 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   obi_data_req_t  filter_trans;
   logic           filter_resp_valid;
   obi_data_resp_t filter_resp;
-  lsu_err_wb_t    filter_err;
 
   // Transaction request (from cv32e40s_write_buffer to cv32e40s_data_obi_interface)
   logic           bus_trans_valid;
@@ -145,8 +170,11 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   logic [31:0]    wdata;
 
   logic           split_q;              // Currently performing the second address phase of a split misaligned load/store
-  logic           misaligned_halfword;  // Halfword is not naturally aligned, but no split is needed
+                                        // Note that in the presence of a write buffer, split_q will align with acceptance of the second
+                                        // transfer by the write buffer. This may not align with the OBI address phase.
+  logic           nonsplit_misaligned_halfword;  // Halfword is not naturally aligned, but no split is needed
   logic           misaligned_access;    // Access is not naturally aligned
+  logic           modified_access;      // Access is modified, e.g. non-naturally aligned access needs two bus transactions
 
   logic           filter_resp_busy;     // Response filter busy
 
@@ -161,15 +189,6 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   logic           integrity_err_obi;    // OBI interface integrity error
   logic           protocol_err_obi;    // OBI interface protocol error
 
-  logic                  xif_req;       // The ongoing memory request comes from the XIF interface
-  logic                  xif_mpu_err;   // The ongoing memory request caused an MPU error
-  logic                  xif_ready_1;   // The LSU second stage is ready for an XIF transaction
-  logic                  xif_res_q;     // The next memory result is for the XIF interface
-  logic [X_ID_WIDTH-1:0] xif_id_q;      // Instruction ID of an XIF memory transaction
-
-
-  assign xif_req = X_EXT && xif_mem_if.mem_valid;
-
   // Transaction (before aligner)
   // Generate address from operands (atomic memory transactions do not use an address offset computation)
   always_comb begin
@@ -182,6 +201,11 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
 
     trans.sext  = id_ex_pipe_i.lsu_sext;
   end
+
+  // Set outputs for trigger module
+  assign lsu_addr_o = wpt_trans.addr;
+  assign lsu_we_o   = wpt_trans.we;
+  assign lsu_be_o = be;
 
   ///////////////////////////////// BE generation ////////////////////////////////
   always_comb
@@ -214,7 +238,7 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
         end
       end
       default:
-      begin // Writing a word (note: XIF memory requests always write a word)
+      begin // Writing a word
         if (split_q == 1'b0)
         begin // non-misaligned case
           case (trans.addr[1:0])
@@ -264,22 +288,14 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
       rdata_offset_q   <= 2'b0;
       last_q           <= 1'b0;
     end else if (ctrl_update) begin     // request was granted, we wait for rvalid and can continue to WB
-      if (xif_req) begin
-        // Note: lsu_size_q is set to max size to prevent the zero/sign extension logic from
-        // overwriting data
-        lsu_size_q     <= 2'b10;
-        lsu_sext_q     <= 1'b0;
-        lsu_we_q       <= xif_mem_if.mem_req.we;
-        rdata_offset_q <= '0;
-      end else begin
-        lsu_size_q     <= trans.size;
-        lsu_sext_q     <= trans.sext;
-        lsu_we_q       <= trans.we;
-        rdata_offset_q <= trans.addr[1:0];
-      end
+      lsu_size_q     <= trans.size;
+      lsu_sext_q     <= trans.sext;
+      lsu_we_q       <= trans.we;
+      rdata_offset_q <= trans.addr[1:0];
+
       // If we currently signal split from first stage (EX), WB stage will not see the last transfer for this update.
       // Otherwise we are on the last. For non-split accesses we always mark as last.
-      last_q           <= lsu_split_0_o ? 1'b0 : 1'b1;
+      last_q         <= lsu_split_0_o ? 1'b0 : 1'b1;
     end
   end
 
@@ -289,12 +305,11 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   // Reset/killed on !valid_0_i to ensure it is zero for the
   // first phase of the next instruction. Otherwise it could stick at 1 after a killed
   // split, causing next LSU instruction to calculate wrong _be.
-  // todo: add assertion that it is zero for the first phase (regardless of alignment)
   always_ff @(posedge clk, negedge rst_n) begin
     if (rst_n == 1'b0) begin
       split_q    <= 1'b0;
     end else begin
-      if(!valid_0_i && !xif_req) begin
+      if(!valid_0_i) begin
         split_q <= 1'b0; // Reset split_st when no valid instructions
       end else if (ctrl_update) begin // EX done, update split_q for next address phase
         split_q <= lsu_split_0_o;
@@ -302,22 +317,6 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
     end
   end
 
-  generate
-    if (X_EXT) begin : x_ext_regs
-      always_ff @(posedge clk, negedge rst_n) begin
-        if (rst_n == 1'b0) begin
-          xif_res_q <= '0;
-          xif_id_q  <= '0;
-        end else if (ctrl_update) begin       // request was granted
-          xif_res_q <= xif_req;               // expect an XIF result if we did an XIF request
-          xif_id_q  <= xif_mem_if.mem_req.id; // save XIF instruction ID for result
-        end
-      end
-    end else begin : no_x_ext_regs
-      assign xif_res_q = 1'b0;
-      assign xif_id_q  = '0;
-    end
-  endgenerate
 
   ////////////////////////////////////////////////////////////////////////
   //  ____  _               _____      _                 _              //
@@ -378,21 +377,27 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   // Output will be valid (valid_1_o) only for the last phase of split access.
   assign lsu_rdata_1_o = rdata_ext;
 
-  // misaligned_access is high for both transfers of a misaligned transfer
-  // TODO: Give MPU a separate modified_access_i input
-  assign misaligned_access = split_q || lsu_split_0_o || misaligned_halfword || (xif_req && (xif_mem_if.mem_req.attr[0] || xif_mem_if.mem_req.attr[1]));
+  // Misaligned accesses occur for:
+  //
+  // - Both phases of a split misaligned access
+  // - For a misaligned halfword that does not require a split
+  assign misaligned_access = split_q || lsu_split_0_o || nonsplit_misaligned_halfword;
+
+  // Modified acccesses occur for:
+  //
+  // - Both phases of a split misaligned access
+  assign modified_access = split_q || lsu_split_0_o;
 
   // Check for misaligned accesses that need a second memory access
   // If one is detected, this is signaled with lsu_split_0_o.
   // This is used to gate off ready_0_o to avoid instructions into
   // the EX stage while the LSU is handling the second phase of the split access.
   // Also detecting misaligned halfwords that don't need a second transfer.
-  // Note: XIF memory requests are already aligned and do not need a second memory access.
   always_comb
   begin
     lsu_split_0_o = 1'b0;
-    misaligned_halfword = 1'b0;
-    if (valid_0_i && !xif_req && !split_q)
+    nonsplit_misaligned_halfword = 1'b0;
+    if (valid_0_i && !split_q)
     begin
       case (trans.size)
         2'b10: // word
@@ -405,7 +410,7 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
           if (trans.addr[1:0] == 2'b11)
             lsu_split_0_o = 1'b1;
           if (trans.addr[0] != 1'b0)
-            misaligned_halfword = 1'b1;
+            nonsplit_misaligned_halfword = 1'b1;
         end
         default:;
       endcase // case (trans.size)
@@ -414,7 +419,7 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
 
   // Set flags for first and last op
   // Only valid when id_ex_pipe.lsu_en == 1
-  assign lsu_last_op_0_o = !lsu_split_0_o;
+  assign lsu_last_op_0_o  = !lsu_split_0_o;
   assign lsu_first_op_0_o = !split_q;
 
   // Busy if there are ongoing (or potentially outstanding) transfers
@@ -431,47 +436,36 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   //////////////////////////////////////////////////////////////////////////////
 
   always_comb begin
-    if (xif_req) begin
-      align_trans.addr      = xif_mem_if.mem_req.addr;
-      align_trans.we        = xif_mem_if.mem_req.we;
-      align_trans.be        = xif_mem_if.mem_req.be;
-      align_trans.wdata     = xif_mem_if.mem_req.wdata;
-      align_trans.prot      = {xif_mem_if.mem_req.mode, 1'b1}; // XIF transfers are data transfers
-      align_trans.dbg       = '0;                              // TODO setup debug triggers
-      align_trans.memtype   = 2'b00;                           // Memory type is assigned in MPU
-      align_trans.achk      = 12'h000;                         // Set in data_obi_interface, tie off here.
-      align_trans.integrity = 1'b0;                            // PMA integrity attribute is assigned in the MPU
-    end else begin
-      // For last phase of misaligned/split transfer the address needs to be word aligned (as LSB of be will be set)
-      // todo: As part of the fix for https://github.com/openhwgroup/cv32e40x/issues/388 the following should be used as well:
-      // align_trans.addr   = split_q ? {trans.addr[31:2], 2'b00} + 'h4 : trans.addr;
-      align_trans.addr      = (split_q ? {trans.addr[31:2], 2'b00} + 'h4 : trans.addr);
-      align_trans.we        = trans.we;
-      align_trans.be        = be;
-      align_trans.wdata     = wdata;
-      align_trans.prot      = {trans.mode, 1'b1};              // Transfers from LSU are data transfers
-      align_trans.dbg       = trans.dbg;
-      align_trans.memtype   = 2'b00;                           // Memory type is assigned in MPU
-      align_trans.achk      = 12'h000;                         // Set in data_obi_interface, tie off here.
-      align_trans.integrity = 1'b0;                            // PMA integrity attribute is assigned in the MPU
-    end
+    // For last phase of misaligned/split transfer the address needs to be word aligned (as LSB of be will be set)
+    wpt_trans.addr      = (split_q ? {trans.addr[31:2], 2'b00} + 'h4 : trans.addr);
+    wpt_trans.we        = trans.we;
+    wpt_trans.be        = be;
+    wpt_trans.wdata     = wdata;
+    wpt_trans.prot      = {trans.mode, 1'b1};              // Transfers from LSU are data transfers
+    wpt_trans.dbg       = trans.dbg;
+    wpt_trans.memtype   = 2'b00;                           // Memory type is assigned in MPU
+    wpt_trans.achk      = 13'h0;                           // Set in data_obi_interface, tie off here.
+    wpt_trans.integrity = 1'b0;                            // PMA integrity attribute is assigned in the MPU
   end
+
+  // Set handshake signals for wpt_trans (same as for trans, but kept separate for clean naming)
+  assign wpt_trans_valid = trans_valid;
+  assign trans_ready     = wpt_trans_ready;
+
+  // Indicate if transaction is part of a PUSH/POP sequence
+  assign wpt_trans_pushpop = id_ex_pipe_i.instr_meta.pushpop;
 
   // Transaction request generation
   // OBI compatible (avoids combinatorial path from data_rvalid_i to data_req_o). Multiple trans_* transactions can be
   // issued (and accepted) before a response (resp_*) is received.
-  assign trans_valid = (valid_0_i || xif_req) && (cnt_q < DEPTH);
+  assign trans_valid = valid_0_i && (cnt_q < DEPTH);
 
   // LSU second stage is ready if it is not being used (i.e. no outstanding transfers, cnt_q = 0),
   // or if it is being used and the awaited response arrives (resp_rvalid).
-  // XIF transactions bypass the pipeline, hence ready_1_i is not required for the second stage to
-  // be ready for XIF transactions.
   assign ready_1_o   = ((cnt_q == 2'b00) ? 1'b1 : resp_valid) && ready_1_i;
-  assign xif_ready_1 = ((cnt_q == 2'b00) ? 1'b1 : resp_valid);
 
   // LSU second stage is valid when resp_valid (typically data_rvalid_i) is received. Both parts of a misaligned transfer will signal valid_1_o.
-  assign valid_1_o                          = resp_valid && valid_1_i && !xif_res_q;
-  assign xif_mem_result_if.mem_result_valid = last_q && resp_valid && xif_res_q; // todo: last_q or not?
+  assign valid_1_o                          = resp_valid && valid_1_i;
 
   // LSU EX stage readyness requires two criteria to be met:
   //
@@ -486,41 +480,29 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
 
   // Internal signal used in ctrl_update.
   // Indicates that address phase in EX is complete.
-  // XIF request bypasses pipeline, ignores ready_0_i but requires xif_ready_1 instead.
   assign done_0    = (
-                      !(valid_0_i || xif_req) ? 1'b1 :
+                      !(valid_0_i) ? 1'b1 :
                       (cnt_q == 2'b00)        ? (trans_valid && trans_ready) :
                       (cnt_q == 2'b01)        ? (trans_valid && trans_ready) :
                       1'b1
-                     ) && (ready_0_i || (xif_req && xif_ready_1));
+                     ) && ready_0_i;
 
-  // XIF request bypasses pipeline (does not assert valid_0_o) and takes precedence over regular
-  // requests, hence inhibits a concurrent request from EX stage
   assign valid_0_o =  (
                        (cnt_q == 2'b00) ? (trans_valid && trans_ready) :
                        (cnt_q == 2'b01) ? (trans_valid && trans_ready) :
                        1'b1
-                      ) && valid_0_i && !xif_req;
+                      ) && valid_0_i;
 
 
   // External (EX) ready only when not handling multi cycle split accesses
-  // otherwise we may let a new instruction into EX, overwriting second phase of split access..
-  // XIF transactions take precedence, thus the LSU is not ready for EX in case of an XIF request.
-  assign ready_0_o = done_0 && !lsu_split_0_o && !xif_req;
+  // otherwise we may let a new instruction into EX, overwriting second phase of split access.
+  assign ready_0_o = done_0 && !lsu_split_0_o;
 
-  generate
-    if (X_EXT) begin : x_ext_mem_ready
-      assign xif_mem_if.mem_ready = done_0 && !lsu_split_0_o;
-    end else begin : no_x_ext_mem_ready
-      assign xif_mem_if.mem_ready = 1'b0;
-    end
-  endgenerate
-
-  // Export mpu status to WB stage/controller
-  assign lsu_mpu_status_1_o = resp.mpu_status;
+  // Export mpu status and align check status to WB stage/controller
+  assign lsu_mpu_status_1_o   = resp.mpu_status;
 
   // Update signals for EX/WB registers (when EX has valid data itself and is ready for next)
-  assign ctrl_update = done_0 && (valid_0_i || xif_req);
+  assign ctrl_update = done_0 && valid_0_i;
 
 
   //////////////////////////////////////////////////////////////////////////////
@@ -614,8 +596,83 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
 
   // Validate bus_error on rvalid from the bus (WB stage)
   // For bufferable transfers, this can happen many cycles after the pipeline control logic has seen the filtered resp_valid
-  // Todo: This bypasses the MPU, could be merged with mpu_status_e and passed through the MPU instead
-  assign lsu_err_1_o = xif_res_q ? '0 : filter_err;
+  assign lsu_err_1_o.bus_err       = resp.bus_resp.err[0];
+  assign lsu_err_1_o.store         = resp.bus_resp.err[1];
+  assign lsu_err_1_o.integrity_err = resp.bus_resp.integrity_err;
+
+  //////////////////////////////////////////////////////////////////////////////
+  // WPT
+  //////////////////////////////////////////////////////////////////////////////
+
+  // Watchpint trigger "gate". If a watchpoint trigger is detected, this module will
+  // consume the transaction, not letting it through to the MPU. The triger match will
+  // be returned with the response with WB timing.
+  generate
+    if (DBG_NUM_TRIGGERS > 0) begin : gen_wpt
+      cv32e40s_wpt wpt_i
+        (
+        .clk                 ( clk               ),
+        .rst_n               ( rst_n             ),
+
+        // Input from debug_triggers module
+        .trigger_match_i     ( trigger_match_0_i ),
+
+        // Interface towards MPU
+        .mpu_trans_ready_i   ( mpu_trans_ready   ),
+        .mpu_trans_valid_o   ( mpu_trans_valid   ),
+        .mpu_trans_pushpop_o ( mpu_trans_pushpop ),
+        .mpu_trans_o         ( mpu_trans         ),
+
+        .mpu_resp_valid_i    ( mpu_resp_valid    ),
+        .mpu_resp_i          ( mpu_resp          ),
+
+        // Interface towards core
+        .core_trans_valid_i  ( wpt_trans_valid   ),
+        .core_trans_ready_o  ( wpt_trans_ready   ),
+        .core_trans_pushpop_i( wpt_trans_pushpop ),
+        .core_trans_i        ( wpt_trans         ),
+
+        .core_resp_valid_o   ( wpt_resp_valid    ),
+        .core_resp_o         ( wpt_resp          ),
+
+        // Indication from the core that there will be one pending transaction in the next cycle
+        .core_one_txn_pend_n ( cnt_is_one_next   ),
+
+        // Indication from the core that watchpoint triggers should be reported after all in flight transactions
+        // are complete
+        .core_wpt_wait_i     ( 1'b1              ),
+
+        // Report watchpoint triggers to the core immediatly (used in case core_wpt_wait_i is not asserted)
+        .core_wpt_match_o    (                   )
+        );
+
+      // Extract rdata from response struct
+      assign wpt_resp_rdata = wpt_resp.bus_resp.rdata;
+
+      assign resp_valid = wpt_resp_valid;
+      assign resp_rdata = wpt_resp_rdata;
+      assign resp       = wpt_resp;
+
+      assign lsu_wpt_match_1_o = resp.wpt_match;
+
+    end else begin : gen_no_wpt
+      // Bypass WPT in case DBG_NUM_TRIGGERS is zero
+      assign lsu_wpt_match_1_o = resp.wpt_match;
+      assign mpu_trans_valid   = wpt_trans_valid;
+      assign mpu_trans         = wpt_trans;
+      assign mpu_trans_pushpop = wpt_trans_pushpop;
+      assign wpt_trans_ready   = mpu_trans_ready;
+      assign wpt_resp_valid    = mpu_resp_valid;
+      assign wpt_resp          = mpu_resp;
+
+      assign wpt_resp_rdata = wpt_resp.bus_resp.rdata;
+
+      assign resp_valid = wpt_resp_valid;
+      assign resp_rdata = wpt_resp_rdata;
+      assign resp       = wpt_resp;
+    end
+  endgenerate
+
 
   //////////////////////////////////////////////////////////////////////////////
   // MPU
@@ -630,37 +687,39 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
     .PMA_NUM_REGIONS    ( PMA_NUM_REGIONS      ),
     .PMA_CFG            ( PMA_CFG              ),
     .PMP_GRANULARITY    ( PMP_GRANULARITY      ),
-    .PMP_NUM_REGIONS    ( PMP_NUM_REGIONS      )
+    .PMP_NUM_REGIONS    ( PMP_NUM_REGIONS      ),
+    .DEBUG              ( DEBUG                ),
+    .DM_REGION_START    ( DM_REGION_START      ),
+    .DM_REGION_END      ( DM_REGION_END        )
   )
   mpu_i
   (
     .clk                  ( clk                ),
     .rst_n                ( rst_n              ),
     .misaligned_access_i  ( misaligned_access  ),
-    .priv_lvl_i           ( priv_lvl_lsu_i     ),
     .csr_pmp_i            ( csr_pmp_i          ),
+    .modified_access_i    ( modified_access    ),
 
     .core_one_txn_pend_n  ( cnt_is_one_next    ),
-    .core_mpu_err_wait_i  ( !xif_req           ),
-    .core_mpu_err_o       ( xif_mpu_err        ),
-    .core_trans_valid_i   ( trans_valid        ),
-    .core_trans_ready_o   ( trans_ready        ),
-    .core_trans_i         ( align_trans        ),
-    .core_resp_valid_o    ( resp_valid         ),
-    .core_resp_o          ( resp               ),
+    .core_mpu_err_wait_i  ( 1'b1               ),
+    .core_mpu_err_o       (                    ),
+    .core_trans_valid_i   ( mpu_trans_valid    ),
+    .core_trans_pushpop_i ( mpu_trans_pushpop  ),
+    .core_trans_ready_o   ( mpu_trans_ready    ),
+    .core_trans_i         ( mpu_trans          ),
+    .core_resp_valid_o    ( mpu_resp_valid     ),
+    .core_resp_o          ( mpu_resp           ),
 
     .bus_trans_valid_o    ( filter_trans_valid ),
     .bus_trans_ready_i    ( filter_trans_ready ),
     .bus_trans_o          ( filter_trans       ),
     .bus_resp_valid_i     ( filter_resp_valid  ),
     .bus_resp_i           ( filter_resp        )
+
   );
 
-  // Extract rdata and err from response struct
-  assign resp_rdata = resp.bus_resp.rdata;
-
+  // Extract protocol error from response struct
   assign protocol_err_mpu = resp_valid && !(|cnt_q);
-
 
   //////////////////////////////////////////////////////////////////////////////
   // Response Filter
@@ -681,7 +740,6 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
        .trans_i        ( filter_trans        ),
        .resp_valid_o   ( filter_resp_valid   ),
        .resp_o         ( filter_resp         ),
-       .err_o          ( filter_err          ),
 
        .valid_o        ( buffer_trans_valid  ),
        .ready_i        ( buffer_trans_ready  ),
@@ -747,34 +805,5 @@ module cv32e40s_load_store_unit import cv32e40s_pkg::*;
   // Set error bits (fans into alert_major)
   assign integrity_err_o = integrity_err_obi;
   assign protocol_err_o  = protocol_err_obi || protocol_err_mpu || filter_protocol_err;
-
-  //////////////////////////////////////////////////////////////////////////////
-  // XIF interface response and result data
-  //////////////////////////////////////////////////////////////////////////////
-
-  generate
-    if (X_EXT) begin : x_ext
-      // XIF memory response: convert MPU errors to exception codes
-      assign xif_mem_if.mem_resp.exc     = xif_mpu_err;
-      assign xif_mem_if.mem_resp.exccode = xif_mpu_err ? (
-                                            trans.we ? EXC_CAUSE_STORE_FAULT : EXC_CAUSE_LOAD_FAULT
-                                           ) : '0;
-      assign xif_mem_if.mem_resp.dbg     = '0; // TODO forward debug triggers
-
-      // XIF memory result
-      assign xif_mem_result_if.mem_result.id    = xif_id_q;
-      assign xif_mem_result_if.mem_result.rdata = rdata_ext;
-      assign xif_mem_result_if.mem_result.err   = filter_err.bus_err; // forward bus errors to coprocessor
-      assign xif_mem_result_if.mem_result.dbg   = '0;                 // TODO forward debug triggers
-    end else begin : no_x_ext
-      assign xif_mem_if.mem_resp.exc            = '0;
-      assign xif_mem_if.mem_resp.exccode        = '0;
-      assign xif_mem_if.mem_resp.dbg            = '0;
-      assign xif_mem_result_if.mem_result.id    = '0;
-      assign xif_mem_result_if.mem_result.rdata = '0;
-      assign xif_mem_result_if.mem_result.err   = '0;
-      assign xif_mem_result_if.mem_result.dbg   = '0;
-    end
-  endgenerate
 
 endmodule

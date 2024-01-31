@@ -50,8 +50,8 @@ module cv32e40s_csr #(
 
       // The shadow registers are logically redundant and are therefore easily optimized away by most synthesis tools.
       // These registers are therefore implemented as instantiated cells so that they can be preserved in the synthesis script.
-      for (genvar i = 0; i < WIDTH; i++) begin : gen_csr
-        if (MASK[i]) begin : gen_unmasked
+      for (genvar i = 0; i < WIDTH; i++) begin : gen_csr_hardened
+        if (MASK[i]) begin : gen_unmasked_hardened
           if (RESETVALUE[i] == 1'b1) begin : gen_rv1
             cv32e40s_sffs #(.LIB(LIB)) sffs_rdatareg  (.clk(clk_gated), .rst_n(rst_n), .d_i(rdata_d[i]),  .q_o(rdata_q[i]));
             cv32e40s_sffr #(.LIB(LIB)) sffr_shadowreg (.clk(clk_gated), .rst_n(rst_n), .d_i(shadow_d[i]), .q_o(shadow_q[i]));
@@ -59,22 +59,33 @@ module cv32e40s_csr #(
             cv32e40s_sffr #(.LIB(LIB)) sffr_rdatareg  (.clk(clk_gated), .rst_n(rst_n), .d_i(rdata_d[i]),  .q_o(rdata_q[i]));
             cv32e40s_sffs #(.LIB(LIB)) sffs_shadowreg (.clk(clk_gated), .rst_n(rst_n), .d_i(shadow_d[i]), .q_o(shadow_q[i]));
           end
-        end else begin : gen_masked
-          assign rdata_q[i]  = 1'b0;
-          assign shadow_q[i] = 1'b1;
+        end else begin : gen_masked_hardened
+          if (RESETVALUE[i] == 1'b1) begin : gen_constant_1
+            assign rdata_q[i]  = 1'b1;
+            assign shadow_q[i] = 1'b0;
+          end else begin : gen_constant_0
+            assign rdata_q[i]  = 1'b0;
+            assign shadow_q[i] = 1'b1;
+          end
         end
       end
 
     end else begin : gen_unhardened
-
-      always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-          rdata_q <= RESETVALUE & MASK;
-        end else if (wr_en_i) begin
-          rdata_q <= wr_data_i & MASK;
+      for (genvar i = 0; i < WIDTH; i++) begin : gen_csr_unhardened
+        if (MASK[i]) begin : gen_unmasked_unhardened
+          // Bits with mask set are actual flipflops
+          always_ff @(posedge clk or negedge rst_n) begin
+            if (!rst_n) begin
+              rdata_q[i] <= RESETVALUE[i];
+            end else if (wr_en_i) begin
+              rdata_q[i] <= wr_data_i[i];
+            end
+          end
+        end else begin : gen_masked_unhardened
+          // Bits with mask cleared are tied off to the reset value
+          assign rdata_q[i] = RESETVALUE[i];
         end
-      end
-
+      end // for
       assign rd_error_o = 1'b0;
     end
   endgenerate

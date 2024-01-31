@@ -36,7 +36,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 module cv32e40s_instr_obi_interface import cv32e40s_pkg::*;
-#(  parameter int          MAX_OUTSTANDING = 2
+#(  parameter int unsigned MAX_OUTSTANDING = 2
  )
 (
   input  logic           clk,
@@ -57,13 +57,13 @@ module cv32e40s_instr_obi_interface import cv32e40s_pkg::*;
   input xsecure_ctrl_t   xsecure_ctrl_i,
 
   // OBI interface
-  if_c_obi.master        m_c_obi_instr_if
+  cv32e40s_if_c_obi.master m_c_obi_instr_if
 );
 
 
   obi_if_state_e state_q, next_state;
 
-  logic [11:0]          achk;                         // Address phase checksum
+  logic [12:0]          achk;                         // Address phase checksum
 
   logic                 gntpar_err;                   // gnt parity error (immediate)
   logic                 rvalidpar_err_resp;           // rvalid parity error (immediate during response phase)
@@ -87,8 +87,13 @@ module cv32e40s_instr_obi_interface import cv32e40s_pkg::*;
 
   always_comb begin
     resp_o                = m_c_obi_instr_if.resp_payload;
-    resp_o.integrity_err  = rvalidpar_err_resp || gntpar_err_resp || rchk_err_resp;
-    resp_o.integrity      = integrity_resp;
+    if (SECURE) begin : integrity
+      resp_o.integrity_err = rvalidpar_err_resp || gntpar_err_resp || rchk_err_resp;
+      resp_o.integrity     = integrity_resp;
+    end else begin : no_integrity
+      resp_o.integrity_err = 1'b0;
+      resp_o.integrity     = 1'b0;
+    end
   end
 
   //////////////////////////////////////////////////////////////////////////////
@@ -149,7 +154,7 @@ module cv32e40s_instr_obi_interface import cv32e40s_pkg::*;
   end
 
   //////////////////////////////////////////////////////////////////////////////
-  // Integrity // todo: ensure this will not get optimized away
+  // Integrity
   //////////////////////////////////////////////////////////////////////////////
 
   always_comb begin
@@ -158,8 +163,9 @@ module cv32e40s_instr_obi_interface import cv32e40s_pkg::*;
       ^{8'b0},                                         // wdata[23:16] = 8'b0
       ^{8'b0},                                         // wdata[15:8] = 8'b0
       ^{8'b0},                                         // wdata[7:0] = 8'b0
-      ^{6'b0},                                         // atop[5:0] = 6'b0
       ~^{m_c_obi_instr_if.req_payload.dbg},
+      ^{6'b0},                                         // atop[5:0] = 6'b0
+      ^{8'b0},                                         // mid[7:0]  = 8'b0
       ~^{4'b1111, 1'b0},                                // be[3:0] = 4'b1111, we = 1'b0
       ~^{m_c_obi_instr_if.req_payload.prot[2:0], m_c_obi_instr_if.req_payload.memtype[1:0]},
       ^{m_c_obi_instr_if.req_payload.addr[31:24]},
@@ -201,59 +207,65 @@ module cv32e40s_instr_obi_interface import cv32e40s_pkg::*;
   // Track parity errors
   //////////////////////////////////////
 
-  // Always check gnt parity
-  // alert_major will not update when in reset
-  assign gntpar_err = (m_c_obi_instr_if.s_gnt.gnt == m_c_obi_instr_if.s_gnt.gntpar);
+  generate
+    if (SECURE) begin : secure
+
+      // Always check gnt parity
+      // alert_major will not update when in reset
+      assign gntpar_err = (m_c_obi_instr_if.s_gnt.gnt == m_c_obi_instr_if.s_gnt.gntpar);
 
 
-  cv32e40s_obi_integrity_fifo
-  #(
-      .MAX_OUTSTANDING   (MAX_OUTSTANDING),
-      .RESP_TYPE         (obi_inst_resp_t)
-   )
-  integrity_fifo_i
-  (
-    .clk                (clk                              ),
-    .rst_n              (rst_n                            ),
+      cv32e40s_obi_integrity_fifo
+      #(
+          .MAX_OUTSTANDING   (MAX_OUTSTANDING),
+          .RESP_TYPE         (obi_inst_resp_t)
+       )
+      integrity_fifo_i
+      (
+        .clk                (clk                                    ),
+        .rst_n              (rst_n                                  ),
 
-    // gnt parity error
-    .gntpar_err_i       (gntpar_err                       ),
+        // gnt parity error
+        .gntpar_err_i       (gntpar_err                             ),
 
-    // Transaction inputs
-    .trans_integrity_i  (trans_i.integrity                ),
-    .trans_we_i         (1'b0                             ),
+        // Transaction inputs
+        .trans_integrity_i  (m_c_obi_instr_if.req_payload.integrity ),
+        .trans_we_i         (1'b0                                   ),
 
-    // Xsecure
-    .xsecure_ctrl_i     (xsecure_ctrl_i                   ),
+        // Xsecure
+        .xsecure_ctrl_i     (xsecure_ctrl_i                         ),
 
-    // Response phase properties
-    .gntpar_err_resp_o  (gntpar_err_resp                  ),
-    .integrity_resp_o   (integrity_resp                   ),
-    .rchk_err_resp_o    (rchk_err_resp                    ),
+        // Response phase properties
+        .gntpar_err_resp_o  (gntpar_err_resp                        ),
+        .integrity_resp_o   (integrity_resp                         ),
+        .rchk_err_resp_o    (rchk_err_resp                          ),
 
-    .protocol_err_o     (protocol_err                     ),
+        .protocol_err_o     (protocol_err                           ),
 
-    // OBI interface
-    .obi_req_i          (m_c_obi_instr_if.s_req.req       ),
-    .obi_gnt_i          (m_c_obi_instr_if.s_gnt.gnt       ),
-    .obi_rvalid_i       (m_c_obi_instr_if.s_rvalid.rvalid ),
-    .obi_resp_i         (resp_o                           )
-  );
-
-
-  // Checking rvalid parity
-  // alert_major_o will go high immediately, while the rvalidpar_err_resp for the instruction
-  // will only propagate when rvalid==1.
-  assign rvalidpar_err_resp = (m_c_obi_instr_if.s_rvalid.rvalid == m_c_obi_instr_if.s_rvalid.rvalidpar);
-
-  // Set integrity error outputs.
-  // rchk_err: recomputed checksum mismatch when rvalid=1 and PMA has integrity set for the transaction
-  // rvalidpar_err_resp: mismatch on rvalid parity bit at any time
-  // gntpar_err: mismatch on gnt parity bit at any time
-  assign integrity_err_o = rchk_err_resp || rvalidpar_err_resp || gntpar_err;
-  assign protocol_err_o  = protocol_err;
+        // OBI interface
+        .obi_req_i          (m_c_obi_instr_if.s_req.req             ),
+        .obi_gnt_i          (m_c_obi_instr_if.s_gnt.gnt             ),
+        .obi_rvalid_i       (m_c_obi_instr_if.s_rvalid.rvalid       ),
+        .obi_resp_i         (resp_o                                 )
+      );
 
 
+      // Checking rvalid parity
+      // alert_major_o will go high immediately, while the rvalidpar_err_resp for the instruction
+      // will only propagate when rvalid==1.
+      assign rvalidpar_err_resp = (m_c_obi_instr_if.s_rvalid.rvalid == m_c_obi_instr_if.s_rvalid.rvalidpar);
 
+      // Set integrity error outputs.
+      // rchk_err: recomputed checksum mismatch when rvalid=1 and PMA has integrity set for the transaction
+      // rvalidpar_err_resp: mismatch on rvalid parity bit at any time
+      // gntpar_err: mismatch on gnt parity bit at any time
+      assign integrity_err_o = rchk_err_resp || rvalidpar_err_resp || gntpar_err;
+      assign protocol_err_o  = protocol_err;
+
+    end else begin : no_secure
+      assign protocol_err_o     = 1'b0;
+      assign integrity_err_o    = 1'b0;
+    end
+  endgenerate
 
 endmodule

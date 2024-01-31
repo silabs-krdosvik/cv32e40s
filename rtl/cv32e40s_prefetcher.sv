@@ -37,9 +37,9 @@
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 
-module cv32e40s_prefetcher
+module cv32e40s_prefetcher import cv32e40s_pkg::*;
 #(
-    parameter bit SMCLIC = 1'b0
+    parameter bit CLIC = 1'b0
 )
 (
   input  logic                     clk,
@@ -50,24 +50,24 @@ module cv32e40s_prefetcher
   input  logic [31:0]              fetch_branch_addr_i,           // Taken branch address (only valid when fetch_branch_i = 1), word aligned
   input  logic                     fetch_valid_i,
   output logic                     fetch_ready_o,
-  input  logic                     fetch_ptr_access_i,            // Access is data access (CLIC) // todo: add similar for table jump
-  output logic                     fetch_ptr_access_o,            // Handshake is for a pointer access (CLIC and Zc)
+  input  logic                     fetch_ptr_access_i,            // Access is for a pointer (CLIC, mret or tablejump)
+  output logic                     fetch_ptr_access_o,            // Handshake is for a pointer access (CLIC, mret or tablejump)
+  input  privlvl_t                 fetch_priv_lvl_access_i,       // Priv level of access
+  output privlvl_t                 fetch_priv_lvl_access_o,       // Priv level for the (fetch_valid_i && fetch_ready_o) handshake, indicating privilege level of the requested instruction.
 
   // Transaction request interface
   output logic                     trans_valid_o,           // Transaction request valid (to bus interface adapter)
   input  logic                     trans_ready_i,           // Transaction request ready (transaction gets accepted when trans_valid_o and trans_ready_i are both 1)
   output logic [31:0]              trans_addr_o             // Transaction address (only valid when trans_valid_o = 1). No stability requirements.
-
-
 );
 
-  import cv32e40s_pkg::*;
 
   prefetch_state_e state_q, next_state;
 
   // Transaction address
   logic [31:0]                   trans_addr_q, trans_addr_incr;
   logic                          trans_ptr_access_q;
+  privlvl_t                      trans_priv_lvl_q;
 
   // Increment address (address will be made word aligned at core level)
   assign trans_addr_incr = {trans_addr_q[31:1], 1'b0} + 32'd4;
@@ -86,6 +86,7 @@ module cv32e40s_prefetcher
     next_state = state_q;
     trans_addr_o = trans_addr_q;
     fetch_ptr_access_o = trans_ptr_access_q;
+    fetch_priv_lvl_access_o = trans_priv_lvl_q;
 
     case(state_q)
       // Default state (pass on branch target address or transaction with incremented address)
@@ -96,9 +97,11 @@ module cv32e40s_prefetcher
           if (fetch_branch_i) begin
             trans_addr_o = fetch_branch_addr_i;
             fetch_ptr_access_o = fetch_ptr_access_i;
+            fetch_priv_lvl_access_o = fetch_priv_lvl_access_i;
           end else begin
             trans_addr_o = trans_addr_incr;
             fetch_ptr_access_o = 1'b0; // No incremental pointer fetches
+            fetch_priv_lvl_access_o = fetch_priv_lvl_access_i;
           end
         end
         if ((fetch_branch_i) && !(trans_valid_o && trans_ready_i)) begin
@@ -114,6 +117,7 @@ module cv32e40s_prefetcher
         // yet have its target address accepted by the bus interface adapter.
         trans_addr_o = fetch_branch_i ? fetch_branch_addr_i : trans_addr_q;
         fetch_ptr_access_o = fetch_branch_i ? fetch_ptr_access_i : trans_ptr_access_q;
+        fetch_priv_lvl_access_o = fetch_branch_i ? fetch_priv_lvl_access_i : trans_priv_lvl_q;
         if (trans_valid_o && trans_ready_i) begin
           // Transaction with branch target address has been accepted. Start regular prefetch again.
           next_state = IDLE;
@@ -133,9 +137,10 @@ module cv32e40s_prefetcher
   begin
     if(rst_n == 1'b0)
     begin
-      state_q        <= IDLE;
-      trans_addr_q   <= '0;
+      state_q            <= IDLE;
+      trans_addr_q       <= '0;
       trans_ptr_access_q <= 1'b0;
+      trans_priv_lvl_q   <= PRIV_LVL_M;
     end
     else
     begin
@@ -143,6 +148,7 @@ module cv32e40s_prefetcher
       if (fetch_branch_i || (trans_valid_o && trans_ready_i)) begin
         trans_addr_q <= trans_addr_o;
         trans_ptr_access_q <= fetch_ptr_access_o;
+        trans_priv_lvl_q <= fetch_priv_lvl_access_o;
       end
     end
   end

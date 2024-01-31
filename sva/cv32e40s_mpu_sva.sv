@@ -26,9 +26,15 @@
 
 module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
   #(  parameter int PMP_NUM_REGIONS              = 0,
+      parameter int unsigned PMP_GRANULARITY     = 0,
       parameter int PMA_NUM_REGIONS              = 0,
       parameter pma_cfg_t PMA_CFG[PMA_NUM_REGIONS-1:0] = '{default:PMA_R_DEFAULT},
-      parameter int unsigned IS_INSTR_SIDE = 0)
+      parameter int unsigned IS_INSTR_SIDE = 0,
+      parameter type         CORE_RESP_TYPE = inst_resp_t,
+      parameter type         CORE_REQ_TYPE  = obi_inst_req_t,
+      parameter bit          DEBUG = 1,
+      parameter logic [31:0] DM_REGION_START = 32'hF0000000,
+      parameter logic [31:0] DM_REGION_END   = 32'hF0003FFF)
   (
    input logic        clk,
    input logic        rst_n,
@@ -37,20 +43,26 @@ module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
    input logic        misaligned_access_i,
    input logic        bus_trans_bufferable,
    input logic        bus_trans_cacheable,
+   input logic        bus_trans_integrity,
 
    // PMA signals
    input logic        pma_err,
    input logic [31:0] pma_addr,
    input pma_cfg_t    pma_cfg,
+   input logic        pma_dbg,
 
    // PMP signals
    input pmp_csr_t    csr_pmp_i,
+   input logic        pmp_err,
 
    // Core OBI signals
    input logic [ 1:0] obi_memtype,
    input logic [31:0] obi_addr,
    input logic        obi_req,
    input logic        obi_gnt,
+   input logic        obi_dbg,
+
+   input obi_if_state_e obi_if_state,
 
    // Interface towards bus interface
    input logic        bus_trans_ready_i,
@@ -65,8 +77,10 @@ module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
    input logic        write_buffer_txn_cacheable,
 
    // Interface towards core
-   input logic        core_trans_valid_i,
-   input logic        core_trans_ready_o,
+   input logic         core_trans_valid_i,
+   input logic         core_trans_ready_o,
+   input CORE_REQ_TYPE core_trans_i,
+   input logic         core_trans_pushpop_i,
 
    input logic        core_resp_valid_o,
 
@@ -76,7 +90,11 @@ module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
    input logic        mpu_block_bus,
    input              mpu_state_e state_q,
    input logic        mpu_err,
-   input logic        load_access
+   input logic        load_access,
+   input logic        lsu_split_0,
+   input logic        lsu_split_q,
+   input logic        lsu_ctrl_update,
+   input logic        ctrl_exception_wb
    );
 
   // PMA assertions helper signals
@@ -86,6 +104,11 @@ module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
   // Not checking bits [1:0]; bit 0 is always 0; bit 1 is not checked because it is only
   // suppressed after the PMA. These address bits are also ignored by the PMA itself.
   assign is_addr_match = obi_addr[31:2] == pma_addr[31:2];
+
+  // Check if a transaction matches DM_REGION while in debug mode
+  logic is_pma_dbg_matched;
+
+  assign is_pma_dbg_matched = (core_trans_i.addr >= DM_REGION_START && core_trans_i.addr <= DM_REGION_END) && core_trans_i.dbg;
 
   logic was_obi_waiting;
   logic was_obi_reqnognt;
@@ -158,32 +181,6 @@ module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
     cov_pma_matchother : cover property (@(posedge clk) disable iff (!rst_n) (is_pma_matched && (pma_match_num > 0)));
   `endif
 
-
-  // Checks for illegal PMA region configuration
-
-  always_comb begin
-    if (PMA_NUM_REGIONS != 0) begin
-      a_pma_valid_config : assert (PMA_NUM_REGIONS == $size(PMA_CFG))
-        else `uvm_error("mpu", "PMA_CFG must contain PMA_NUM_REGION entries");
-    end
-  end
-
-  generate for (genvar i = 0; i < PMA_NUM_REGIONS; i++)
-    begin : a_pma_no_illegal_configs
-    always_comb begin
-        if (PMA_CFG[i].main == 1'b0) begin
-          a_io_noncacheable : assert (PMA_CFG[i].cacheable == 1'b0)
-            else `uvm_error("mpu", "PMA regions configured as I/O cannot be defined as cacheable");
-        end
-      end
-    end
-  endgenerate
-
-  a_pma_valid_num_regions :
-    assert property (@(posedge clk) disable iff (!rst_n)
-                     (0 <= PMA_NUM_REGIONS) && (PMA_NUM_REGIONS <= 16))
-      else `uvm_error("mpu", "PMA number of regions is badly configured")
-
   // Region matching
   generate
     if (PMA_NUM_REGIONS) begin
@@ -211,13 +208,17 @@ module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
   pma_cfg_t    pma_expected_cfg;
   logic        pma_expected_err;
   always_comb begin
-    pma_expected_cfg = NO_PMA_R_DEFAULT;
     if (PMA_NUM_REGIONS) begin
-      pma_expected_cfg = is_pma_matched ? PMA_CFG[pma_lowest_match] : PMA_R_DEFAULT;
+      pma_expected_cfg = is_pma_dbg_matched ? '{main    : 1'b1, default : '0} :
+                         is_pma_matched     ? PMA_CFG[pma_lowest_match]       : PMA_R_DEFAULT;
+    end else begin
+      pma_expected_cfg = is_pma_dbg_matched ? '{main    : 1'b1, default : '0} :
+                         NO_PMA_R_DEFAULT;
     end
   end
   assign pma_expected_err = (instr_fetch_access && !pma_expected_cfg.main)  ||
-                            (misaligned_access_i && !pma_expected_cfg.main);
+                            (misaligned_access_i && !pma_expected_cfg.main) ||
+                            (core_trans_pushpop_i && !pma_expected_cfg.main);
   a_pma_expect_cfg :
     assert property (@(posedge clk) disable iff (!rst_n) pma_cfg == pma_expected_cfg)
       else `uvm_error("mpu", "RTL cfg don't match SVA expectations")
@@ -295,9 +296,16 @@ module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
     assert property (@(posedge clk) disable iff (!rst_n)
                      obi_req
                      |->
+                     // If we have an address match, there must be no PMA error
                      (!pma_err && is_addr_match) ||
-                     (write_buffer_state && write_buffer_valid_o) ||
-                     (!is_addr_match && was_obi_waiting && $past(obi_req)))
+                     // or a transaction from the write buffer is causing obi_req
+                     // (a different transaction could cause pma_err in the same cycle)
+                     (!IS_INSTR_SIDE && (write_buffer_state && write_buffer_valid_o)) ||
+                     // or we are already outputting a obi_req but a new address comes in which may cause a pma_err
+                     (IS_INSTR_SIDE && (!is_addr_match && (obi_if_state == REGISTERED))) ||
+                     // or we get an address match, but was already outputting the same address (no pma_err)
+                     // but a change in debug mode causes the new transaction the same address to fail
+                     (IS_INSTR_SIDE && (is_addr_match && (obi_if_state == REGISTERED) && (!pma_dbg && obi_dbg))))
       else `uvm_error("mpu", "obi made request to pma-forbidden region")
 
   generate
@@ -422,16 +430,21 @@ module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
                          |-> csr_pmp_i.mseccfg.rlb)
           else `uvm_error("mpu", "PMP region unlocked with mseccfg.rlb cleared")
 
+      // Disregard PMP_GRANULARITY+2 LSB's of the PMP address as the value read from these
+      // will change based on PMP mode.
       a_csr_pmp_addr_lock:
         assert property (@(posedge clk) disable iff (!rst_n)
-                         ($changed(csr_pmp_i.addr[i]))
+                         ($changed(csr_pmp_i.addr[i][33:PMP_GRANULARITY+2]))
                          |-> !(csr_pmp_i.cfg[i].lock && !csr_pmp_i.mseccfg.rlb))
           else `uvm_error("mpu", "PMP address changed when it should be locked")
 
       if(i < PMP_NUM_REGIONS-1) begin: pmp_tor_lock
+
+        // Disregard PMP_GRANULARITY+2 LSB's of the PMP address as the value read from these
+        // will change based on PMP mode.
         a_csr_pmp_addr_lock_tor:
           assert property (@(posedge clk) disable iff (!rst_n)
-                           ($changed(csr_pmp_i.addr[i]))
+                           ($changed(csr_pmp_i.addr[i][33:PMP_GRANULARITY+2]))
                            |-> !((csr_pmp_i.cfg[i+1].mode == PMP_MODE_TOR) && csr_pmp_i.cfg[i+1].lock && !csr_pmp_i.mseccfg.rlb))
             else `uvm_error("mpu", "PMP address changed when it should be locked through TOR mode on the next PMP region")
       end
@@ -454,6 +467,36 @@ module cv32e40s_mpu_sva import cv32e40s_pkg::*; import uvm_pkg::*;
                        ##1 !$fell(csr_pmp_i.mseccfg.mmwp))
         else `uvm_error("mpu", "mseccfg.mmwp not sticky.")
 
+if (DEBUG) begin
+  // Check that PMA sets correct attribution for accesses to DM during debug
+  // main, non-cacheable, non-bufferable, non-integrity
 
+  a_dm_region_dbg:
+  assert property (@(posedge clk) disable iff (!rst_n)
+                  is_pma_dbg_matched
+                  |->
+                  !pma_err &&               // Always 'main' while accessing DM in debug mode
+                  !pmp_err &&
+                  !bus_trans_cacheable &&
+                  !bus_trans_bufferable &&
+                  !bus_trans_integrity)
+        else `uvm_error("mpu", "Wrong attributes for access to DM during debug mode")
+end
+
+generate
+  if (IS_INSTR_SIDE == 0) begin
+    a_misalign_err_block :
+      assert property (@(posedge clk) disable iff (!rst_n)
+                      core_trans_valid_i &&   // MPU gets a valid transaction
+                      lsu_split_0 &&          // LSU is handling first part of split misaligned
+                      mpu_err     &&          // MPU gives an error
+                      lsu_ctrl_update         // LSU passes failed instruction to WB
+                      |=>                     // In the next cycle:
+                      lsu_split_q &&          // LSU is handling second half of split misaligned
+                      !core_trans_valid_i &&  // MPU shall not see a valid input
+                      ctrl_exception_wb)      // and controller shall see an exception
+        else `uvm_error("mpu", "Second part of split misaligned not suppressed on exception from the first")
+  end
+endgenerate
 endmodule : cv32e40s_mpu_sva
 

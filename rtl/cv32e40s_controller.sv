@@ -31,14 +31,14 @@
 
 module cv32e40s_controller import cv32e40s_pkg::*;
 #(
-  parameter bit          X_EXT                  = 0,
   parameter int unsigned REGFILE_NUM_READ_PORTS = 2,
-  parameter bit          SMCLIC                 = 0,
-  parameter int          SMCLIC_ID_WIDTH        = 5
+  parameter bit          CLIC                   = 0,
+  parameter int unsigned CLIC_ID_WIDTH          = 5,
+  parameter rv32_e       RV32                   = RV32I,
+  parameter bit          DEBUG                  = 1
 )
 (
   input  logic        clk,                        // Gated clock
-  input  logic        clk_ungated_i,              // Ungated clock
   input  logic        rst_n,
 
   input  logic        fetch_enable_i,             // Start the decoding
@@ -47,10 +47,8 @@ module cv32e40s_controller import cv32e40s_pkg::*;
 
   // From IF stage
   input  logic [31:0] pc_if_i,
-  input  logic        first_op_nondummy_if_i,
   input  logic        last_op_if_i,
   input  logic        abort_op_if_i,
-  input  logic        prefetch_valid_if_i,
 
   // from IF/ID pipeline
   input  if_id_pipe_t if_id_pipe_i,
@@ -60,8 +58,8 @@ module cv32e40s_controller import cv32e40s_pkg::*;
   input  logic        sys_en_id_i,
   input  logic        sys_mret_id_i,
   input  logic        csr_en_raw_id_i,
-  input  csr_opcode_e csr_op_id_i,
   input  logic        sys_wfi_id_i,
+  input  logic        sys_wfe_id_i,
   input  logic        first_op_id_i,
   input  logic        last_sec_op_id_i,
   input  logic        last_op_id_i,
@@ -70,6 +68,8 @@ module cv32e40s_controller import cv32e40s_pkg::*;
   input  id_ex_pipe_t id_ex_pipe_i,
 
   input  ex_wb_pipe_t ex_wb_pipe_i,
+  input  mpu_status_e mpu_status_wb_i,            // MPU status (WB stage)
+  input  logic [31:0] wpt_match_wb_i,             // LSU watchpoint trigger in WB
 
   // Last operation bits
   input  logic        last_op_ex_i,               // EX contains the last operation of an instruction
@@ -78,7 +78,6 @@ module cv32e40s_controller import cv32e40s_pkg::*;
   input  logic        abort_op_wb_i,
 
   // LSU
-  input  mpu_status_e lsu_mpu_status_wb_i,        // MPU status (WB stage)
   input  logic        data_stall_wb_i,            // WB stalled by LSU
   input  lsu_err_wb_t lsu_err_wb_i,               // LSU bus error or integrity error in WB stage
   input  logic        lsu_busy_i,                 // LSU is busy with outstanding transfers
@@ -101,6 +100,10 @@ module cv32e40s_controller import cv32e40s_pkg::*;
 
   input logic  [1:0]  mtvec_mode_i,
   input  mcause_t     mcause_i,
+  input  xsecure_ctrl_t xsecure_ctrl_i,
+  input  mintstatus_t mintstatus_i,
+
+  input  logic        etrigger_wb_i,
 
   // CSR write stobes
   input  logic        csr_wr_in_wb_flush_i,
@@ -115,6 +118,7 @@ module cv32e40s_controller import cv32e40s_pkg::*;
   input  logic        csr_mnxti_read_i,           // MNXTI is read in CSR (EX)
 
   input  logic        csr_irq_enable_write_i,     // An interrupt may be enabled by a write (WB)
+  input  csr_hz_t     csr_hz_i,
 
   input logic [REGFILE_NUM_READ_PORTS-1:0] rf_re_id_i,
   input rf_addr_t     rf_raddr_id_i[REGFILE_NUM_READ_PORTS],
@@ -127,7 +131,7 @@ module cv32e40s_controller import cv32e40s_pkg::*;
   input  logic        wb_valid_i,               // WB stage is done
 
   // Data OBI interface monitor
-  if_c_obi.monitor    m_c_obi_data_if,
+  cv32e40s_if_c_obi.monitor m_c_obi_data_if,
 
   // Outputs
   output ctrl_byp_t   ctrl_byp_o,
@@ -135,25 +139,22 @@ module cv32e40s_controller import cv32e40s_pkg::*;
 
   // Fencei flush handshake
   output logic        fencei_flush_req_o,
-  input logic         fencei_flush_ack_i,
+  input logic         fencei_flush_ack_i
 
-  // eXtension interface
-  if_xif.cpu_commit   xif_commit_if,
-  input               xif_csr_error_i
 );
 
   // Main FSM and debug FSM
   cv32e40s_controller_fsm
   #(
-    .X_EXT                       ( X_EXT                    ),
-    .SMCLIC                      ( SMCLIC                   ),
-    .SMCLIC_ID_WIDTH             ( SMCLIC_ID_WIDTH          )
+    .CLIC                        ( CLIC                     ),
+    .CLIC_ID_WIDTH               ( CLIC_ID_WIDTH            ),
+    .RV32                        ( RV32                     ),
+    .DEBUG                       ( DEBUG                    )
   )
   controller_fsm_i
   (
     // Clocks and reset
     .clk                         ( clk                      ),
-    .clk_ungated_i               ( clk_ungated_i            ),
     .rst_n                       ( rst_n                    ),
 
     .fetch_enable_i              ( fetch_enable_i           ),
@@ -162,10 +163,8 @@ module cv32e40s_controller import cv32e40s_pkg::*;
 
     .if_valid_i                  ( if_valid_i               ),
     .pc_if_i                     ( pc_if_i                  ),
-    .first_op_nondummy_if_i      ( first_op_nondummy_if_i   ),
     .last_op_if_i                ( last_op_if_i             ),
     .abort_op_if_i               ( abort_op_if_i            ),
-    .prefetch_valid_if_i         ( prefetch_valid_if_i      ),
 
     // From ID stage
     .if_id_pipe_i                ( if_id_pipe_i             ),
@@ -189,13 +188,14 @@ module cv32e40s_controller import cv32e40s_pkg::*;
     // From WB stage
     .ex_wb_pipe_i                ( ex_wb_pipe_i             ),
     .lsu_err_wb_i                ( lsu_err_wb_i             ),
-    .lsu_mpu_status_wb_i         ( lsu_mpu_status_wb_i      ),
+    .mpu_status_wb_i             ( mpu_status_wb_i          ),
     .data_stall_wb_i             ( data_stall_wb_i          ),
     .wb_ready_i                  ( wb_ready_i               ),
     .wb_valid_i                  ( wb_valid_i               ),
     .last_op_wb_i                ( last_op_wb_i             ),
     .abort_op_wb_i               ( abort_op_wb_i            ),
     .lsu_valid_wb_i              ( lsu_valid_wb_i           ),
+    .wpt_match_wb_i              ( wpt_match_wb_i           ),
 
     .lsu_interruptible_i         ( lsu_interruptible_i      ),
 
@@ -215,10 +215,14 @@ module cv32e40s_controller import cv32e40s_pkg::*;
 
     .mtvec_mode_i                ( mtvec_mode_i             ),
 
+    .etrigger_wb_i               ( etrigger_wb_i            ),
+
     // Debug Signal
     .debug_req_i                 ( debug_req_i              ),
     .dcsr_i                      ( dcsr_i                   ),
     .mcause_i                    ( mcause_i                 ),
+    .xsecure_ctrl_i              ( xsecure_ctrl_i           ),
+    .mintstatus_i                ( mintstatus_i             ),
 
     // Fencei flush handshake
     .fencei_flush_ack_i          ( fencei_flush_ack_i       ),
@@ -230,12 +234,8 @@ module cv32e40s_controller import cv32e40s_pkg::*;
     .m_c_obi_data_if             ( m_c_obi_data_if          ),
 
     // Outputs
-    .ctrl_fsm_o                  ( ctrl_fsm_o               ),
-
-    // eXtension interface
-    .xif_commit_if               ( xif_commit_if            ),
-    .xif_csr_error_i             ( xif_csr_error_i          )
-  );
+    .ctrl_fsm_o                  ( ctrl_fsm_o               )
+);
 
 
   // Hazard/bypass/stall control instance
@@ -256,8 +256,8 @@ module cv32e40s_controller import cv32e40s_pkg::*;
     .alu_jmpr_id_i              ( alu_jmpr_id_i            ),
     .sys_mret_id_i              ( sys_mret_id_i            ),
     .csr_en_raw_id_i            ( csr_en_raw_id_i          ),
-    .csr_op_id_i                ( csr_op_id_i              ),
     .sys_wfi_id_i               ( sys_wfi_id_i             ),
+    .sys_wfe_id_i               ( sys_wfe_id_i             ),
     .last_sec_op_id_i           ( last_sec_op_id_i         ),
 
     // From EX
@@ -267,6 +267,8 @@ module cv32e40s_controller import cv32e40s_pkg::*;
     // From WB
     .wb_ready_i                 ( wb_ready_i               ),
     .csr_irq_enable_write_i     ( csr_irq_enable_write_i   ),
+
+    .csr_hz_i                   ( csr_hz_i                 ),
 
     // Outputs
     .ctrl_byp_o                 ( ctrl_byp_o               )

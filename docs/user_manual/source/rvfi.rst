@@ -60,6 +60,47 @@ The ``rvfi_dbg_mode`` signal is high if the instruction was executed in debug mo
 
 Whenever |corev| has a pending NMI, the ``rvfi_nmip`` will signal this. ``rvfi_nmip[0]`` will be 1 whenever an NMI is pending, while ``rvfi_nmip[1]`` will be 0 for loads and 1 for stores.
 
+**Memory interface signals**
+
+|corev| RVFI memory signals ``rvfi_mem_``  are extended to support multiple memory operations per instruction and the following signals have been added:
+
+.. code-block:: verilog
+
+  output [ 1*NMEM-1:0] rvfi_mem_exokay,
+  output [ 1*NMEM-1:0] rvfi_mem_err,
+  output [ 3*NMEM-1:0] rvfi_mem_prot,
+  output [ 6*NMEM-1:0] rvfi_mem_atop,
+  output [ 2*NMEM-1:0] rvfi_mem_memtype,
+  output [ NMEM-1  :0] rvfi_mem_dbg
+
+**Integer register read/write**
+
+The integer register read/write signals have been extended to support multiple register file operations per instruction.
+
+.. code-block:: verilog
+
+   output [32*32-1:0] rvfi_gpr_rdata,
+   output [31:0]      rvfi_gpr_rmask,
+   output [32*32-1:0] rvfi_gpr_wdata,
+   output [31:0]      rvfi_gpr_wmask
+
+**Instruction fetch attributes**
+
+|corev| RVFI has been extended with the following signals for reporting attributes used when fetching an instruction.
+
+.. code-block:: verilog
+
+   output [2:0] rvfi_instr_prot,
+   output [1:0] rvfi_instr_memtype,
+   output       rvfi_instr_dbg
+
+**rvfi_trap and rvfi_intr**
+
+These two signals have been extended, see :ref:`rvfi_compatibility`.
+
+
+.. _rvfi_compatibility:
+
 Compatibility
 -------------
 
@@ -68,7 +109,7 @@ This chapter specifies interpretations and compatibilities to the [SYMBIOTIC-RVF
 **Interface Qualification**
 
 All RVFI output signals are qualified with the ``rvfi_valid`` signal.
-Any RVFI operation (retired or trapped instruction) will set ``rvfi_valid`` high and increment the ``rvfi_order`` field.
+Any RVFI operation (retired or trapped instruction or trapped CLIC pointer) will set ``rvfi_valid`` high and increment the ``rvfi_order`` field.
 When ``rvfi_valid`` is low, all other RVFI outputs can be driven to arbitrary values.
 
 **Trap Signal**
@@ -95,61 +136,63 @@ Where the rvfi_trap_t struct contains the following fields:
   exception_cause    logic [5:0]  [8:3]
   debug_cause        logic [2:0]  [11:9]
   cause_type         logic [1:0]  [13:12]
+  clicptr            logic        [14]
   =================  ===========  =======
 
 
-``rvfi_trap`` consists of 14 bits.
-``rvfi_trap.trap`` is asserted if an instruction causes an exception or debug entry.
+``rvfi_trap`` consists of 15 bits.
+``rvfi_trap.trap`` is asserted if an instruction or CLIC pointer causes an exception or debug entry.
 ``rvfi_trap.exception`` is set for synchronous traps that do not cause debug entry. ``rvfi_trap.debug`` is set for synchronous traps that do cause debug mode entry.
 ``rvfi_trap.exception_cause`` provide information about non-debug traps, while ``rvfi_trap.debug_cause`` provide information about traps causing entry to debug mode.
 ``rvfi_trap.cause_type`` differentiates between fault causes that map to the same exception code in ``rvfi_trap.exception_cause`` and ``rvfi_trap.debug_cause``.
+``rvfi_trap.clicptr`` is set for CLIC pointers. CLIC pointers are only reported on RVFI when they get an exception during fetch.
 When an exception is caused by a single stepped instruction, both ``rvfi_trap.exception`` and ``rvfi_trap.debug`` will be set.
 When ``rvfi_trap`` signals a trap, CSR side effects and a jump to a trap/debug handler in the next cycle can be expected.
 The different trap scenarios, their expected side-effects and trap signalling are listed in the table below:
 
 .. table:: Table of synchronous trap types
   :name: Table of synchronous trap types
-  :widths: 20 10 5 5 5 5 5 5 10 30
+  :widths: 20 10 5 5 5 5 5 5 5 10 30
   :class: no-scrollbar-table
 
-  +------------------------------+-----------+-----------------------------------------------------------------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Scenario                     | Trap Type | rvfi_trap                                                             | CSRs updated         | Description                                                                                          |
-  |                              |           +------+-----------+-------+-----------------+-------------+------------+                      |                                                                                                      |
-  |                              |           | trap | exception | debug | exception_cause | debug_cause | cause_type |                      |                                                                                                      |
-  +==============================+===========+======+===========+=======+=================+=============+============+======================+======================================================================================================+
-  | Instruction Access Fault     | Exception | 1    | 1         | X     | 0x01            | X           | 0x0        | ``mcause``, ``mepc`` | PMA detects instruction execution from non-executable memory.                                        |
-  |                              |           |      |           |       |                 |             +------------+----------------------+------------------------------------------------------------------------------------------------------+
-  |                              |           |      |           |       |                 |             | 0x1        | ``mcause``, ``mepc`` | PMP detects instruction execution from non-executable memory.                                        |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Illegal Instruction          | Exception | 1    | 1         | X     | 0x02            | X           | 0x0        | ``mcause``, ``mepc`` | Illegal instruction decode.                                                                          |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Breakpoint                   | Exception | 1    | 1         | X     | 0x03            | X           | 0x0        | ``mcause``, ``mepc`` | EBREAK executed with ``dcsr.ebreakm`` = 0.                                                           |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Load Access Fault            | Exception | 1    | 1         | X     | 0x05            | X           | 0x0        | ``mcause``, ``mepc`` | Non-naturally aligned load access attempt to an I/O region.                                          |
-  |                              |           |      |           |       |                 |             +------------+----------------------+------------------------------------------------------------------------------------------------------+
-  |                              |           |      |           |       |                 |             | 0x2        | ``mcause``, ``mepc`` | Load attempt with address failing PMP check.                                                         |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Store/AMO Access Fault       | Exception | 1    | 1         | X     | 0x07            | X           | 0x0        | ``mcause``, ``mepc`` | Non-naturally aligned store access attempt to an I/O region.                                         |
-  |                              |           |      |           |       |                 |             +------------+----------------------+------------------------------------------------------------------------------------------------------+
-  |                              |           |      |           |       |                 |             | 0x2        | ``mcause``, ``mepc`` | Store attempt with address failing PMP check.                                                        |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Environment Call             | Exception | 1    | 1         | X     | 0x08            | X           | 0x0        | ``mcause``, ``mepc`` | ECALL executed from User mode.                                                                       |
-  |                              |           |      |           |       |                 |             +------------+----------------------+------------------------------------------------------------------------------------------------------+
-  |                              |           |      |           |       | 0x0B            | X           | 0x0        | ``mcause``, ``mepc`` | ECALL executed from Machine mode.                                                                    |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Instruction Bus Fault        | Exception | 1    | 1         | X     | 0x24            | X           | 0x0        | ``mcause``, ``mepc`` | OBI bus error on instruction fetch.                                                                  |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Instruction Parity /         | Exception | 1    | 1         | X     | 0x25            | X           | 0x0        | ``mcause``, ``mepc`` | Instruction parity / checksum  fault.                                                                |
-  | Checksum Fault               |           |      |           |       |                 |             |            |                      |                                                                                                      |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Breakpoint to debug          | Debug     | 1    | 0         | 1     | X               | 0x1         | 0x0        | ``dpc``, ``dcsr``    | EBREAK from non-debug mode executed with ``dcsr.ebreakm`` == 1.                                      |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Breakpoint in debug          | Debug     | 1    | 0         | 1     | X               | 0x1         | 0x0        | No CSRs updated      | EBREAK in debug mode jumps to debug handler.                                                         |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Debug Trigger Match          | Debug     | 1    | 0         | 1     | X               | 0x2         | 0x0        | ``dpc``, ``dcsr``    | Debug trigger address match with ``mcontrol.timing`` = 0.                                            |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
-  | Single step                  | Debug     | 1    | X         | 1     | X               | 0x4         | X          | ``dpc``, ``dcsr``    | Single step.                                                                                         |
-  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+----------------------+------------------------------------------------------------------------------------------------------+
+  +------------------------------+-----------+---------------------------------------------------------------------------------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Scenario                     | Trap Type | rvfi_trap                                                                       | CSRs updated         | Description                                                                                          |
+  |                              |           +------+-----------+-------+-----------------+-------------+------------+---------+                      |                                                                                                      |
+  |                              |           | trap | exception | debug | exception_cause | debug_cause | cause_type | clicptr |                      |                                                                                                      |
+  +==============================+===========+======+===========+=======+=================+=============+============+=========+======================+======================================================================================================+
+  | Instruction Access Fault     | Exception | 1    | 1         | X     | 0x01            | X           | 0x0        | 0 / 1   | ``mcause``, ``mepc`` | PMA detects instruction execution from non-executable memory.                                        |
+  |                              |           |      |           |       |                 |             +------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  |                              |           |      |           |       |                 |             | 0x1        | 0 / 1   | ``mcause``, ``mepc`` | PMP detects instruction execution from non-executable memory.                                        |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Illegal Instruction          | Exception | 1    | 1         | X     | 0x02            | X           | 0x0        | 0       | ``mcause``, ``mepc`` | Illegal instruction decode.                                                                          |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Breakpoint                   | Exception | 1    | 1         | X     | 0x03            | X           | 0x0        | 0       | ``mcause``, ``mepc`` | EBREAK executed with ``dcsr.ebreakm`` = 0.                                                           |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Load Access Fault            | Exception | 1    | 1         | X     | 0x05            | X           | 0x0        | 0       | ``mcause``, ``mepc`` | Non-naturally aligned load access attempt to an I/O region.                                          |
+  |                              |           |      |           |       |                 |             +------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  |                              |           |      |           |       |                 |             | 0x2        | 0       | ``mcause``, ``mepc`` | Load attempt with address failing PMP check.                                                         |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Store/AMO Access Fault       | Exception | 1    | 1         | X     | 0x07            | X           | 0x0        | 0       | ``mcause``, ``mepc`` | Non-naturally aligned store access attempt to an I/O region.                                         |
+  |                              |           |      |           |       |                 |             +------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  |                              |           |      |           |       |                 |             | 0x2        | 0       | ``mcause``, ``mepc`` | Store attempt with address failing PMP check.                                                        |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Environment Call             | Exception | 1    | 1         | X     | 0x08            | X           | 0x0        | 0       | ``mcause``, ``mepc`` | ECALL executed from User mode.                                                                       |
+  |                              |           |      |           |       |                 |             +------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  |                              |           |      |           |       | 0x0B            | X           | 0x0        | 0       | ``mcause``, ``mepc`` | ECALL executed from Machine mode.                                                                    |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Instruction Bus Fault        | Exception | 1    | 1         | X     | 0x18            | X           | 0x0        | 0 / 1   | ``mcause``, ``mepc`` | OBI bus error on instruction fetch.                                                                  |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Instruction Parity /         | Exception | 1    | 1         | X     | 0x19            | X           | 0x0        | 0 / 1   | ``mcause``, ``mepc`` | Instruction parity / checksum  fault.                                                                |
+  | Checksum Fault               |           |      |           |       |                 |             |            |         |                      |                                                                                                      |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Breakpoint to debug          | Debug     | 1    | 0         | 1     | X               | 0x1         | 0x0        | 0       | ``dpc``, ``dcsr``    | EBREAK from non-debug mode executed with ``dcsr.ebreakm`` == 1.                                      |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Breakpoint in debug          | Debug     | 1    | 0         | 1     | X               | 0x1         | 0x0        | 0       | No CSRs updated      | EBREAK in debug mode jumps to debug handler.                                                         |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Debug Trigger Match          | Debug     | 1    | 0         | 1     | X               | 0x2         | 0x0        | 0       | ``dpc``, ``dcsr``    | Debug trigger address match with ``mcontrol.timing`` = 0.                                            |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
+  | Single step                  | Debug     | 1    | X         | 1     | X               | 0x4         | X          | 0       | ``dpc``, ``dcsr``    | Single step.                                                                                         |
+  +------------------------------+-----------+------+-----------+-------+-----------------+-------------+------------+---------+----------------------+------------------------------------------------------------------------------------------------------+
 
 **Interrupts**
 
@@ -225,19 +268,64 @@ For |corev|, the ``rvfi_mem`` interface has been expanded to support multiple me
 
 .. code-block:: verilog
 
-   output [NRET * NMEM * XLEN - 1 : 0]   rvfi_mem_addr
+   output [NRET * NMEM * XLEN   - 1 : 0] rvfi_mem_addr
    output [NRET * NMEM * XLEN/8 - 1 : 0] rvfi_mem_rmask
    output [NRET * NMEM * XLEN/8 - 1 : 0] rvfi_mem_wmask
-   output [NRET * NMEM * XLEN - 1 : 0]   rvfi_mem_rdata
-   output [NRET * NMEM * XLEN - 1 : 0]   rvfi_mem_wdata
+   output [NRET * NMEM * XLEN   - 1 : 0] rvfi_mem_rdata
+   output [NRET * NMEM * XLEN   - 1 : 0] rvfi_mem_wdata
+   output [NRET * NMEM * 3      - 1 : 0] rvfi_mem_prot
+   output [NRET * NMEM * 6      - 1 : 0] rvfi_mem_atop
+   output [NRET * NMEM * 1      - 1 : 0] rvfi_mem_err
+   output [NRET * NMEM * 1      - 1 : 0] rvfi_mem_exokay
+   output [NRET * NMEM * 2      - 1 : 0] rvfi_mem_memtype
+   output [       NMEM          - 1 : 0] rvfi_mem_dbg
 
 Instructions will populate the ``rvfi_mem`` outputs with incrementing ``NMEM``, starting at ``NMEM=1``.
 
 Instructions with a single memory operation (e.g. all RV32I instructions), including split misaligned transfers, will only use NMEM = 1.
 Instructions with multiple memory operations (e.g. the push and pop instructions from Zcmp) use NMEM > 1 in case multiple memory operations actually occur.
+``rvfi_mem_prot`` indicates the value of OBI prot used for the memory access or accesses. Note that this will be undefined upon access faults.
+``rvfi_mem_memtype`` indicates the memory type attributes associated with each memory operation (i.e cacheable or bufferable). For misaligned transactions that are
+split in two memory operations ``rvfi_mem_memtype`` will only report the type attribute for the first memory operation.
+``rvfi_mem_atop`` indicates the type of atomic transaction as specified in [OPENHW-OBI]_.
+``rvfi_mem_exokay``  indicates the status of ``data_exokay_i`` for loads, non-bufferable stores and atomic instructions (and signals 0 otherwise). For split transactions, ``rvfi_mem_exokay`` will only
+be 1 if both transactions receive ``data_exokay_i == 1``.
+``rvfi_mem_err`` indicates if a load, non-bufferable store or atomic instruction got a bus error (and signals 0 otherwise). :numref:`rvfi_mem_err encoding for different transaction types` shows how
+different memory transactions report ``rvfi_mem_err``.
+
+.. table:: rvfi_mem_err encoding for different transaction types
+  :name: rvfi_mem_err encoding for different transaction types
+  :widths: 60 5 5 5 60
+  :class: no-scrollbar-table
+
+  +---------------------+---------+----------------+----------------+--------------------------------+
+  | Instruction type    | Split   | Bufferable (1) | Bufferable (2) |  rvfi_mem_err                  |
+  +=====================+=========+================+================+================================+
+  | Load                | No      | N/A            | N/A            | data_err_i                     |
+  +---------------------+---------+----------------+----------------+--------------------------------+
+  | Load                | Yes     | N/A            | N/A            | data_err_i(1) OR data_err_i(2) |
+  +---------------------+---------+----------------+----------------+--------------------------------+
+  | Store               | No      | No             | N/A            | data_err_i                     |
+  +---------------------+---------+----------------+----------------+--------------------------------+
+  | Store               | No      | Yes            | N/A            | 0                              |
+  +---------------------+---------+----------------+----------------+--------------------------------+
+  | Store               | Yes     | No             | No             | data_err_i(1) OR data_err_i(2) |
+  +---------------------+---------+----------------+----------------+--------------------------------+
+  | Store               | Yes     | Yes            | Yes            | 0                              |
+  +---------------------+---------+----------------+----------------+--------------------------------+
+  | Store               | Yes     | Yes            | No             | data_err_i(2)                  |
+  +---------------------+---------+----------------+----------------+--------------------------------+
+  | Store               | Yes     | No             | Yes            | data_err_i(1)                  |
+  +---------------------+---------+----------------+----------------+--------------------------------+
+
+``rvfi_mem_rdata`` will report the read data for load instructions. In case of split misaligned transactions this read data is the combination of the two transfers.
 
 
 For cores as |corev| that support misaligned access ``rvfi_mem_addr`` will not always be 4 byte aligned. For misaligned accesses the start address of the transfer is reported (i.e. the start address of the first sub-transfer).
+
+.. note::
+  ``rvfi_mem_exokay`` and ``rvfi_mem_err`` will not be reported for bufferable writes (tied to zero). Bufferable writes may get their responses after the instructions have retired.
+
 
 **CSR Signals**
 
@@ -320,38 +408,47 @@ The ``rvfi_halt`` signal is meant for liveness properties of cores that can halt
 
 The ``rvfi_mode`` signal shows the *current* privilege mode as opposed to the *effective* privilege mode of the instruction. I.e. for load and store instructions the reported privilege level will therefore not depend on ``mstatus.mpp`` and ``mstatus.mprv``.
 
-Trace output file
+**OBI prot Signal**
+
+``rvfi_instr_prot`` indicates the value of OBI prot used for fetching the retired instruction. Note that this will be undefined upon access faults.
+
+Simulation trace
 -----------------
 
-Tracing can be enabled during simulation by defining **CV32E40S_TRACE_EXECUTION**. All traced instructions are written to a log file.
-The log file is named ``trace_rvfi.log``.
+The module ``cv32e40s_rvfi_sim_trace`` can be bound to ``cv32e40s_rvfi`` to enable tracing capabilities.
+``cv32e40s_rvfi_sim_trace`` supports trace output to log file and trace annotation in waveforms.
+
+Trace annotation in waveforms is enabled by providing the path to an .itb file through the simulation plusarg ``itb_file``. The name of the plusarg can be overridden through the ``cv32e40s_rvfi_sim_trace`` parameter ``ITB_PLUSARG``.
+The struct ``itrace`` in ``cv32e40s_rvfi_sim_trace`` will contain information about the most recently retired instruction.
+
+Trace output to log is enabled by providing log file path through the simulation plusarg ``log_file``. The name of the plusarg can be overridden through the ``cv32e40s_rvfi_sim_trace`` parameter ``LOGFILE_PATH_PLUSARG``.
 
 Trace output format
 -------------------
 
-The trace output is in tab-separated columns.
+The trace log file format is as described below.
 
-1.  **PC**: The program counter
-2.  **Instr**: The executed instruction (base 16).
-    32 bit wide instructions (8 hex digits) are uncompressed instructions, 16 bit wide instructions (4 hex digits) are compressed instructions.
-3.  **rs1_addr** Register read port 1 source address, 0x0 if not used by instruction
-4.  **rs1_data** Register read port 1 read data, 0x0 if not used by instruction
-5.  **rs2_addr** Register read port 2 source address, 0x0 if not used by instruction
-6.  **rs2_data** Register read port 2 read data, 0x0 if not used by instruction
-7.  **rd_addr**  Register write port 1 destination address, 0x0 if not used by instruction
-8.  **rd_data**  Register write port 1 write data, 0x0 if not used by instruction
-9.  **mem_addr** Memory address for instructions accessing memory
-10. **rvfi_mem_rmask** Bitmask specifying which bytes in ``rvfi_mem_rdata`` contain valid read data
-11. **rvfi_mem_wmask** Bitmask specifying which bytes in ``rvfi_mem_wdata`` contain valid write data
-12. **rvfi_mem_rdata** The data read from memory address specified in ``mem_addr``
-13. **rvfi_mem_wdata** The data written to memory address specified in ``mem_addr``
+1.  **pc**: The program counter
+2.  **rs1(data)** Register read port 1 source register and read data
+3.  **rs2(data)** Register read port 2 source register and read data
+4.  **rd(data)**  Register write port 1 destination register and write data
+5.  **memaddr** Memory address for instructions accessing memory
+6.  **rmask** Bitmask specifying which bytes in ``rdata`` contain valid read data
+7.  **rdata** The data read from memory address specified in ``memaddr``
+8.  **wmask** Bitmask specifying which bytes in ``wdata`` contain valid write data
+9.  **wdata** The data written to memory address specified in ``memaddr``
+10. **Assembly** Assembly code. This column is only populated if an itb file is provided
 
 .. code-block:: text
 
-   PC        Instr     rs1_addr  rs1_rdata  rs2_addr  rs2_rdata  rd_addr  rd_wdata    mem_addr mem_rmask mem_wmask mem_rdata mem_wdata
-   00001f9c  14c70793        0e   000096c8        0c   00000000       0f  00009814    00009814         0         0  00000000  00000000
-   00001fa0  14f72423        0e   000096c8        0f   00009814       00  00000000    00009810         0         f  00000000  00009814
-   00001fa4  0000bf6d        1f   00000000        1b   00000000       00  00000000    00001fa6         0         0  00000000  00000000
-   00001f5e  000043d8        0f   00009814        04   00000000       0e  00000000    00009818         f         0  00000000  00000000
-   00001f60  0000487d        00   00000000        1f   00000000       10  0000001f    0000001f         0         0  00000000  00000000
+   pc         | rs1 (   data   ) | rs2 (   data   ) | rd  (   data   ) | memaddr    | rmask  | rdata      | wmask  | wdata      ||  Assembly
+   0x00000080 | x0  (0x00000000) | x0  (0x00000000) | x3  (0x00013080) | 0x00013080 | 0x0000 | 0x00000000 | 0x0000 | 0x00000000 ||   auipc x3,0x13
+   0x00000084 | x3  (0x00013080) | x0  (0x00000000) | x3  (0x00013610) | 0x00013610 | 0x0000 | 0x00000000 | 0x0000 | 0x00000000 ||   addi x3,x3,1424
+   0x00000088 | x0  (0x00000000) | x0  (0x00000000) | x10 (0x00000088) | 0x00000088 | 0x0000 | 0x00000000 | 0x0000 | 0x00000000 ||   auipc x10,0x0
+   0x0000008c | x10 (0x00000088) | x0  (0x00000000) | x10 (0x00000400) | 0x00000400 | 0x0000 | 0x00000000 | 0x0000 | 0x00000000 ||   addi x10,x10,888
 
+The waveform annotation for the same trace is depicted below:
+
+.. figure:: ../images/rvfi_trace.png
+   :name: Trace waveform annotation
+   :align: center

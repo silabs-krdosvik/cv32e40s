@@ -53,7 +53,7 @@ instruction exception.
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
   | 0x305         | ``mtvec``         | MRW       |                          | Machine Trap-Handler Base Address                       |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x307         | ``mtvt``          | MRW       | ``SMCLIC`` = 1           | Machine Trap-Handler Vector Table Base Address          |
+  | 0x307         | ``mtvt``          | MRW       | ``CLIC`` = 1             | Machine Trap-Handler Vector Table Base Address          |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
   | 0x310         | ``mstatush``      | MRW       |                          | Machine Status (upper 32 bits).                         |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
@@ -75,17 +75,11 @@ instruction exception.
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
   | 0x344         | ``mip``           | MRW       |                          | Machine Interrupt Pending Register                      |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x345         | ``mnxti``         | MRW       | ``SMCLIC`` = 1           | Interrupt handler address and enable modifier           |
+  | 0x345         | ``mnxti``         | MRW       | ``CLIC`` = 1             | Interrupt handler address and enable modifier           |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x346         | ``mintstatus``    | MRW       | ``SMCLIC`` = 1           | Current interrupt levels                                |
+  | 0x347         | ``mintthresh``    | MRW       | ``CLIC`` = 1             | Interrupt-level threshold                               |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x347         | ``mintthresh``    | MRW       | ``SMCLIC`` = 1           | Interrupt-level threshold                               |
-  +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x348         | ``mscratchcsw``   | MRW       | ``SMCLIC`` = 1           | Conditional scratch swap on priv mode change            |
-  +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x349         | ``mscratchcswl``  | MRW       | ``SMCLIC`` = 1           | Conditional scratch swap on level change                |
-  +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x34A         | ``mclicbase``     | MRW       | ``SMCLIC`` = 1           | CLIC Base Register                                      |
+  | 0x349         | ``mscratchcswl``  | MRW       | ``CLIC`` = 1             | Conditional scratch swap on level change                |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
   | 0x7A0         | ``tselect``       | MRW       | ``DBG_NUM_TRIGGERS`` > 0 | Trigger Select Register                                 |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
@@ -93,19 +87,15 @@ instruction exception.
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
   | 0x7A2         | ``tdata2``        | MRW       | ``DBG_NUM_TRIGGERS`` > 0 | Trigger Data Register 2                                 |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x7A3         | ``tdata3``        | MRW       | ``DBG_NUM_TRIGGERS`` > 0 | Trigger Data Register 3                                 |
-  +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
   | 0x7A4         | ``tinfo``         | MRW       | ``DBG_NUM_TRIGGERS`` > 0 | Trigger Info                                            |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x7A5         | ``tcontrol``      | MRW       | ``DBG_NUM_TRIGGERS`` > 0 | Trigger Control                                         |
+  | 0x7B0         | ``dcsr``          | DRW       | ``DEBUG`` = 1            | Debug Control and Status                                |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x7B0         | ``dcsr``          | DRW       |                          | Debug Control and Status                                |
+  | 0x7B1         | ``dpc``           | DRW       | ``DEBUG`` = 1            | Debug PC                                                |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x7B1         | ``dpc``           | DRW       |                          | Debug PC                                                |
+  | 0x7B2         | ``dscratch0``     | DRW       | ``DEBUG`` = 1            | Debug Scratch Register 0                                |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x7B2         | ``dscratch0``     | DRW       |                          | Debug Scratch Register 0                                |
-  +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
-  | 0x7B3         | ``dscratch1``     | DRW       |                          | Debug Scratch Register 1                                |
+  | 0x7B3         | ``dscratch1``     | DRW       | ``DEBUG`` = 1            | Debug Scratch Register 1                                |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
   | 0xB00         | ``mcycle``        | MRW       |                          | (HPM) Machine Cycle Counter                             |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
@@ -136,6 +126,8 @@ instruction exception.
   | 0xF14         | ``mhartid``       | MRO       |                          | Hardware Thread ID                                      |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
   | 0xF15         | ``mconfigptr``    | MRO       |                          | Machine Configuration Pointer                           |
+  +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
+  | 0xFB1         | ``mintstatus``    | MRO       | ``CLIC`` = 1             | Current interrupt levels                                |
   +---------------+-------------------+-----------+--------------------------+---------------------------------------------------------+
 
 .. table:: Control and Status Register Map (additional custom CSRs)
@@ -217,33 +209,35 @@ instruction exception.
     :name: Control and Status Register Map (additional CSRs for User mode support)
     :class: no-scrollbar-table
 
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | CSR address       |   Name         | Privilege  | Parameter  |   Description                                      |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | Machine CSRs                                                                                                      |
-    +===================+================+============+============+====================================================+
-    | 0x306             | ``mcounteren`` | MRW        |            | Machine Counter Enable                             |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x30A             | ``menvcfg``    | MRW        |            | Machine Environment Configuration (lower 32 bits)  |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x30C             | ``mstateen0``  | MRW        |            | Machine state enable 0 (lower 32 bits)             |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x30D             | ``mstateen1``  | MRW        |            | Machine state enable 1 (lower 32 bits)             |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x30E             | ``mstateen2``  | MRW        |            | Machine state enable 2 (lower 32 bits)             |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x30F             | ``mstateen3``  | MRW        |            | Machine state enable 3 (lower 32 bits)             |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x31A             | ``menvcfgh``   | MRW        |            | Machine Environment Configuration (upper 32 bits)  |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x31C             | ``mstateen0h`` | MRW        |            | Machine state enable 0 (upper 32 bits)             |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x31D             | ``mstateen1h`` | MRW        |            | Machine state enable 1 (upper 32 bits)             |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x31E             | ``mstateen2h`` | MRW        |            | Machine state enable 2 (upper 32 bits)             |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
-    | 0x31F             | ``mstateen3h`` | MRW        |            | Machine state enable 3 (upper 32 bits)             |
-    +-------------------+----------------+------------+------------+----------------------------------------------------+
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | CSR address       |   Name          | Privilege  | Parameter    |   Description                                      |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | Machine CSRs                                                                                                         |
+    +===================+=================+============+==============+====================================================+
+    | 0x306             | ``mcounteren``  | MRW        |              | Machine Counter Enable                             |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x30A             | ``menvcfg``     | MRW        |              | Machine Environment Configuration (lower 32 bits)  |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x30C             | ``mstateen0``   | MRW        |              | Machine state enable 0 (lower 32 bits)             |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x30D             | ``mstateen1``   | MRW        |              | Machine state enable 1 (lower 32 bits)             |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x30E             | ``mstateen2``   | MRW        |              | Machine state enable 2 (lower 32 bits)             |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x30F             | ``mstateen3``   | MRW        |              | Machine state enable 3 (lower 32 bits)             |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x31A             | ``menvcfgh``    | MRW        |              | Machine Environment Configuration (upper 32 bits)  |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x31C             | ``mstateen0h``  | MRW        |              | Machine state enable 0 (upper 32 bits)             |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x31D             | ``mstateen1h``  | MRW        |              | Machine state enable 1 (upper 32 bits)             |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x31E             | ``mstateen2h``  | MRW        |              | Machine state enable 2 (upper 32 bits)             |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x31F             | ``mstateen3h``  | MRW        |              | Machine state enable 3 (upper 32 bits)             |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
+    | 0x348             | ``mscratchcsw`` | MRW        | ``CLIC`` = 1 | Conditional scratch swap on priv mode change       |
+    +-------------------+-----------------+------------+--------------+----------------------------------------------------+
 
 .. only:: PMP
 
@@ -426,9 +420,7 @@ Detailed:
   +----------+------------+-----------------------------------------------------------------------------------------------+
   |   Bit #  | R/W        |           Description                                                                         |
   +==========+============+===============================================================================================+
-  | 31:10    | WARL       | **BASE[31:10]**: Table Jump Base Address, 1024 byte aligned.                                  |
-  +----------+------------+-----------------------------------------------------------------------------------------------+
-  |  9:6     | WARL (0x0) | **BASE[9:6]**: Table Jump Base Address, 1024 byte aligned. ``jvt[9:6]`` is hardwired to 0x0.  |
+  | 31:6     | WARL       | **BASE[31:6]**: Table Jump Base Address, 64 byte aligned.                                     |
   +----------+------------+-----------------------------------------------------------------------------------------------+
   |  5:0     | WARL (0x0) | **MODE**: Jump table mode                                                                     |
   +----------+------------+-----------------------------------------------------------------------------------------------+
@@ -583,7 +575,7 @@ All bitfields in the ``misa`` CSR read as 0 except for the following:
 * **U** = 1
 * **X** = 1
 
-Machine Interrupt Enable Register (``mie``) - ``SMCLIC`` == 0
+Machine Interrupt Enable Register (``mie``) - ``CLIC`` == 0
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 CSR Address: 0x304
@@ -628,8 +620,8 @@ Detailed:
   |  0          | WARL (0x0)| Reserved. Hardwired to 0.                                                                |
   +-------------+-----------+------------------------------------------------------------------------------------------+
 
-Machine Interrupt Enable Register (``mie``) - ``SMCLIC`` == 1
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Machine Interrupt Enable Register (``mie``) - ``CLIC`` == 1
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 CSR Address: 0x304
 
@@ -652,8 +644,8 @@ Detailed:
 
 .. _csr-mtvec:
 
-Machine Trap-Vector Base Address (``mtvec``) - ``SMCLIC`` == 0
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Machine Trap-Vector Base Address (``mtvec``) - ``CLIC`` == 0
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 CSR Address: 0x305
 
@@ -675,7 +667,7 @@ Detailed:
   | 1:0     | WARL (0x0, 0x1)  | **MODE**: Interrupt handling mode. 0x0 = non-vectored CLINT mode, 0x1 = vectored CLINT mode.                  |
   +---------+------------------+---------------------------------------------------------------------------------------------------------------+
 
-The initial value of ``mtvec`` is equal to {**mtvec_addr_i[31:7]**, 5'b0, 2'b01}.
+Out of reset ``mtvec`` has the value of 32'h00000001. This value is not observable by SW as ``mtvec`` is initialized to {**mtvec_addr_i[31:7]**, 5'b0, 2'b01} when ``fetch_enable_i`` is asserted the first time after reset release.
 
 When an exception or an interrupt is encountered, the core jumps to the corresponding
 handler using the content of the ``mtvec[31:7]`` as base address. Both non-vectored CLINT mode and vectored CLINT mode
@@ -690,10 +682,10 @@ Upon an NMI in vectored CLINT mode the core jumps to **mtvec[31:7]**, 5'hF, 2'b0
 .. note::
    Memory writes to the ``mtvec`` based vector table require an instruction barrier (``fence.i``) to guarantee that they are visible to the instruction fetch (see :ref:`fencei` and [RISC-V-UNPRIV]_).
 
-.. _csr-mtvec-smclic:
+.. _csr-mtvec-clic:
 
-Machine Trap-Vector Base Address (``mtvec``) - ``SMCLIC`` == 1
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Machine Trap-Vector Base Address (``mtvec``) - ``CLIC`` == 1
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 CSR Address: 0x305
 
@@ -717,7 +709,7 @@ Detailed:
   | 1:0     | WARL (0x3)       | **MODE**: Interrupt handling mode. Always CLIC mode.                                                          |
   +---------+------------------+---------------------------------------------------------------------------------------------------------------+
 
-The initial value of ``mtvec`` is equal to {**mtvec_addr_i[31:7]**, 1'b0, 6'b000011}.
+Out of reset ``mtvec`` has the value of 32'h00000003. This value is not observable by SW as ``mtvec`` is initialized to {**mtvec_addr_i[31:7]**, 1'b0, 6'b000011} when ``fetch_enable_i`` is asserted the first time after reset release.
 
 Upon an NMI in CLIC mode the core jumps to **mtvec[31:7]**, 5'h0, 2'b00} (i.e. index 0).
 
@@ -733,7 +725,7 @@ CSR Address: 0x307
 
 Reset Value: 0x0000_0000
 
-Include Condition: ``SMCLIC`` = 1
+Include Condition: ``CLIC`` = 1
 
 Detailed:
 
@@ -745,12 +737,12 @@ Detailed:
   |   Bit #     |   R/W      |           Description                                                 |
   +=============+============+=======================================================================+
   | 31:N        | RW         | **BASE[31:N]**: Trap-handler vector table base address.               |
-  |             |            | N = maximum(6, 2+SMCLIC_ID_WIDTH).                                    |
+  |             |            | N = maximum(6, 2+CLIC_ID_WIDTH).                                      |
   |             |            | See note below for alignment restrictions.                            |
   +-------------+------------+-----------------------------------------------------------------------+
   | N-1:6       | WARL (0x0) | **BASE[N-1:6]**: Trap-handler vector table base address.              |
   |             |            | This field is only defined if N > 6.                                  |
-  |             |            | N = maximum(6, 2+SMCLIC_ID_WIDTH).                                    |
+  |             |            | N = maximum(6, 2+CLIC_ID_WIDTH).                                      |
   |             |            | ``mtvt[N-1:6]`` is hardwired to 0x0.                                  |
   |             |            | See note below for  alignment restrictions.                           |
   +-------------+------------+-----------------------------------------------------------------------+
@@ -759,7 +751,7 @@ Detailed:
 
 .. note::
    The ``mtvt`` CSR holds the base address of the trap vector table, which has its alignment restricted to both at least 64-bytes and to
-   ``2^(2+SMCLIC_ID_WIDTH)`` bytes or greater power-of-two boundary. For example if ``SMCLIC_ID_WIDTH`` = 8, then 256 CLIC interrupts are supported and the trap vector table
+   ``2^(2+CLIC_ID_WIDTH)`` bytes or greater power-of-two boundary. For example if ``CLIC_ID_WIDTH`` = 8, then 256 CLIC interrupts are supported and the trap vector table
    is aligned to 1024 bytes, and therefore **BASE[9:6]** will be WARL (0x0).
 
 .. note::
@@ -941,9 +933,11 @@ Detailed:
     +------+-------------+---------------------------------------------------------------+
     | Bit# |  R/W        | Definition                                                    |
     +======+=============+===============================================================+
-    | 31   | R (0x0)     | **STCE**. Hardwired to 0                                      |
+    | 31   | WARL (0x0)  | **STCE**. Hardwired to 0                                      |
     +------+-------------+---------------------------------------------------------------+
-    | 30:0 | WPRI (0x0)  | Reserved. Hardwired to 0.                                     |
+    | 30   | WARL (0x0)  | **PBMTE**. Hardwired to 0                                     |
+    +------+-------------+---------------------------------------------------------------+
+    | 29:0 | WPRI (0x0)  | Reserved. Hardwired to 0.                                     |
     +------+-------------+---------------------------------------------------------------+
 
   Machine State Enable 0 (``mstateen0h``)
@@ -1021,6 +1015,38 @@ Detailed:
     +=======+============+==================================================================+
     | 31:0  | WARL (0x0) | Hardwired to 0.                                                  |
     +-------+------------+------------------------------------------------------------------+
+
+
+  .. _csr-mscratchcsw:
+
+  Machine Scratch Swap for Priv Mode Change (``mscratchcsw``)
+  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  CSR Address: 0x348
+
+  Reset Value: 0x0000_0000
+
+  Include Condition: ``CLIC`` = 1
+
+  Detailed:
+
+  .. table::
+    :widths: 10 20 70
+    :class: no-scrollbar-table
+
+    +-------------+------------+-------------------------------------------------------------------------+
+    |   Bit #     |   R/W      |           Description                                                   |
+    +=============+============+=========================================================================+
+    | 31:0        |   RW       | **MSCRATCHCSW**: Machine scratch swap for privilege mode change         |
+    +-------------+------------+-------------------------------------------------------------------------+
+
+  Scratch swap register for multiple privilege modes.
+
+  .. note::
+    Only the read-modify-write (swap/CSRRW) operation is useful for ``mscratchcsw``.
+    The behavior of the non-CSRRW variants (i.e. CSRRS/C, CSRRWI, CSRRS/CI) and CSRRW variants with **rd** = **x0** or **rs1** = **x0** on ``mscratchcsw`` are implementation-defined.
+    |corev| will treat such instructions as illegal instructions.
+
 
 Machine Counter-Inhibit Register (``mcountinhibit``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1112,8 +1138,8 @@ in MEPC, and the core jumps to the exception address. When a mret
 instruction is executed, the value from MEPC replaces the current
 program counter.
 
-Machine Cause (``mcause``) - ``SMCLIC`` == 0
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Machine Cause (``mcause``) - ``CLIC`` == 0
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 CSR Address: 0x342
 
@@ -1138,8 +1164,8 @@ Reset Value: 0x0000_0000
    Software accesses to `mcause[10:0]` must be sensitive to the WLRL field specification of this CSR.  For example,
    when `mcause[31]` is set, writing 0x1 to `mcause[1]` (Supervisor software interrupt) will result in UNDEFINED behavior.
 
-Machine Cause (``mcause``) - ``SMCLIC`` == 1
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Machine Cause (``mcause``) - ``CLIC`` == 1
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 CSR Address: 0x342
 
@@ -1197,8 +1223,8 @@ Detailed:
   | 31:0        | WARL (0x0) | Hardwired to 0.                                                        |
   +-------------+------------+------------------------------------------------------------------------+
 
-Machine Interrupt Pending Register (``mip``) - ``SMCLIC`` == 0
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Machine Interrupt Pending Register (``mip``) - ``CLIC`` == 0
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 CSR Address: 0x344
 
@@ -1242,8 +1268,8 @@ Detailed:
   |  0          | WARL (0x0)| Reserved. Hardwired to 0.                                                                |
   +-------------+-----------+------------------------------------------------------------------------------------------+
 
-Machine Interrupt Pending Register (``mip``) - ``SMCLIC`` == 1
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Machine Interrupt Pending Register (``mip``) - ``CLIC`` == 1
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 CSR Address: 0x344
 
@@ -1273,7 +1299,7 @@ CSR Address: 0x345
 
 Reset Value: 0x0000_0000
 
-Include Condition: ``SMCLIC`` = 1
+Include Condition: ``CLIC`` = 1
 
 Detailed:
 
@@ -1291,40 +1317,9 @@ This register can be used by the software to service the next interrupt when it 
 without incurring the full cost of an interrupt pipeline flush and context save/restore.
 
 .. note::
-  Use of ``mnxti`` with non-zero ``uimm`` values for bits 0, 2, and 4 are reserved for future use.
-  |corev| will treat such instructions as illegal instructions.
-
-.. _csr-mintstatus:
-
-Machine Interrupt Status (``mintstatus``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-CSR Address: 0x346
-
-Reset Value: 0x0000_0000
-
-Include Condition: ``SMCLIC`` = 1
-
-Detailed:
-
-.. table::
-  :widths: 10 20 70
-  :class: no-scrollbar-table
-
-  +-------------+------------+-------------------------------------------------------------------------+
-  |   Bit #     |   R/W      |           Description                                                   |
-  +=============+============+=========================================================================+
-  | 31:24       |   R        | **MIL**: Machine Interrupt Level                                        |
-  +-------------+------------+-------------------------------------------------------------------------+
-  | 23:16       |   R (0x0)  | Reserved. Hardwired to 0.                                               |
-  +-------------+------------+-------------------------------------------------------------------------+
-  | 15: 8       |   R (0x0)  | **SIL**: Supervisor Interrupt Level, hardwired to 0.                    |
-  +-------------+------------+-------------------------------------------------------------------------+
-  |  7: 0       |   R (0x0)  | **UIL**: User Interrupt Level, hardwired to 0.                          |
-  +-------------+------------+-------------------------------------------------------------------------+
-
-This register holds the active interrupt level for each privilege mode.
-Only Machine Interrupt Level is supported.
+  The ``mnxti`` CSR is only designed to be used with the CSRR (CSRRS rd,csr,x0), CSRRSI, and CSRRCI instructions.
+  Accessing the ``mnxti`` CSR using any other CSR instruction form is reserved and |corev| will treat such instruction as illegal instructions.
+  In addition, use of ``mnxti`` with CSRRSI with non-zero uimm values for bits 0, 2, and 4 are reserved for future use and will also be treated as illegal instructions.
 
 .. _csr-mintthresh:
 
@@ -1335,7 +1330,7 @@ CSR Address: 0x347
 
 Reset Value: 0x0000_0000
 
-Include Condition: ``SMCLIC`` = 1
+Include Condition: ``CLIC`` = 1
 
 Detailed:
 
@@ -1353,41 +1348,6 @@ Detailed:
 
 This register holds the machine mode interrupt level threshold.
 
-.. note::
-  The ``SMCLIC_INTTHRESHBITS`` parameter specifies the number of bits actually implemented in the ``mintthresh.th`` field.
-  The implemented bits are kept left justified in the most-significant bits of the 8-bit field, with the lower unimplemented
-  bits treated as hardwired to 1.
-
-.. _csr-mscratchcsw:
-
-Machine Scratch Swap for Priv Mode Change (``mscratchcsw``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-CSR Address: 0x348
-
-Reset Value: 0x0000_0000
-
-Include Condition: ``SMCLIC`` = 1
-
-Detailed:
-
-.. table::
-  :widths: 10 20 70
-  :class: no-scrollbar-table
-
-  +-------------+------------+-------------------------------------------------------------------------+
-  |   Bit #     |   R/W      |           Description                                                   |
-  +=============+============+=========================================================================+
-  | 31:0        |   RW       | **MSCRATCHCSW**: Machine scratch swap for privilege mode change         |
-  +-------------+------------+-------------------------------------------------------------------------+
-
-Scratch swap register for multiple privilege modes.
-
-.. note::
-  Only the read-modify-write (swap/CSRRW) operation is useful for ``mscratchcsw``.
-  The behavior of the non-CSRRW variants (i.e. CSRRS/C, CSRRWI, CSRRS/CI) and CSRRW variants with **rd** = **x0** or **rs1** = **x0** on ``mscratchcsw`` are implementation-defined.
-  |corev| will treat such instructions as illegal instructions.
-
 .. _csr-mscratchcswl:
 
 Machine Scratch Swap for Interrupt-Level Change (``mscratchcswl``)
@@ -1397,7 +1357,7 @@ CSR Address: 0x349
 
 Reset Value: 0x0000_0000
 
-Include Condition: ``SMCLIC`` = 1
+Include Condition: ``CLIC`` = 1
 
 Detailed:
 
@@ -1417,41 +1377,6 @@ Scratch swap register for multiple interrupt levels.
   Only the read-modify-write (swap/CSRRW) operation is useful for ``mscratchcswl``.
   The behavior of the non-CSRRW variants (i.e. CSRRS/C, CSRRWI, CSRRS/CI) and CSRRW variants with **rd** = **x0** or **rs1** = **x0** on ``mscratchcswl`` are implementation-defined.
   |corev| will treat such instructions as illegal instructions.
-
-.. _csr-mclicbase:
-
-CLIC Base (``mclicbase``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-CSR Address: 0x34A
-
-.. note::
-   The address for the ``mclicbase`` CSR has not been defined yet in [RISC-V-SMCLIC]_. The used address is therefore
-   likely to change. Also it is likely that the ``mclicbase`` CSR will be removed all together.
-
-Reset Value: 0x0000_0000
-
-Include Condition: ``SMCLIC`` = 1
-
-Detailed:
-
-.. table::
-  :widths: 10 20 70
-  :class: no-scrollbar-table
-
-  +-------------+------------+-------------------------------------------------------------------------+
-  |   Bit #     |   R/W      |           Description                                                   |
-  +=============+============+=========================================================================+
-  | 31:12       |   R (0x0)  | **MCLICBASE**: CLIC Base                                                |
-  +-------------+------------+-------------------------------------------------------------------------+
-  | 11: 0       |   R (0x0)  | Reserved. Hardwired to 0.                                               |
-  +-------------+------------+-------------------------------------------------------------------------+
-
-CLIC base register.
-
-.. note::
-   Currently ``mclicbase`` CSR is simply hardwired to 0x0 and will therefore likely not reflect the actual CLIC base.
-   This CSR will likely be removed. The [RISC-V-SMCLIC]_ specification does not specify its address yet and therefore no further attempt is made to further implement this in |corev|.
 
 .. _csr-tselect:
 
@@ -1480,33 +1405,37 @@ Trigger Data 1 (``tdata1``)
 
 CSR Address: 0x7A1
 
-Reset Value: 0x6800_1000
+Reset Value: 0x2800_1000
 
 .. table::
   :widths: 10 20 70
   :class: no-scrollbar-table
 
-  +-------+-------------+----------------------------------------------------------------+
-  | Bit#  | R/W         | Description                                                    |
-  +=======+=============+================================================================+
-  | 31:28 | WARL (0x5,  | **TYPE**. 0x5 (``etrigger``), 0x6 (``mcontrol6``),             |
-  |       | 0x6, 0xF)   | 0xF (``disabled``).                                            |
-  +-------+-------------+----------------------------------------------------------------+
-  | 27    | WARL (0x1)  | **DMODE**. Only debug mode can write ``tdata`` registers.      |
-  +-------+-------------+----------------------------------------------------------------+
-  | 26:0  | WARL        | **DATA**. Trigger data depending on type                       |
-  +-------+-------------+----------------------------------------------------------------+
+  +-------+-----------------+----------------------------------------------------------------+
+  | Bit#  | R/W             | Description                                                    |
+  +=======+=================+================================================================+
+  | 31:28 | WARL (0x2, 0x5, | **TYPE**. 0x2 (``mcontrol``), 0x5 (``etrigger``),              |
+  |       | 0x6, 0xF*)      | 0x6 (``mcontrol6``), 0xF (``disabled``).                       |
+  +-------+-----------------+----------------------------------------------------------------+
+  | 27    | WARL (0x1)      | **DMODE**. Only debug mode can write ``tdata`` registers.      |
+  +-------+-----------------+----------------------------------------------------------------+
+  | 26:0  | WARL            | **DATA**. Trigger data depending on type                       |
+  +-------+-----------------+----------------------------------------------------------------+
 
 .. note::
+   Writing 0x0 to ``tdata1`` disables the trigger and changes the value of ``tdata1`` to
+   0xF800_0000, which is the only supported value for a disabled trigger.
    The WARL behavior of ``tdata1.DATA`` depends on the value of ``tdata1.TYPE`` as described in
-   :ref:`csr-mcontrol6`, :ref:`csr-etrigger` and :ref:`csr-tdata1_disabled`.
+   :ref:`csr-mcontrol`, :ref:`csr-mcontrol6`, :ref:`csr-etrigger` and :ref:`csr-tdata1_disabled`.
+   ``tdata1`` will also be set to 0xF800_0000 if ``tdata1`` is attempted to be written with type 0x5 (``etrigger``) while at the same time ``tdata2``
+   contains a value that is illegal for exception triggers.
 
-.. _csr-mcontrol6:
+.. _csr-mcontrol:
 
-Match Control Type 6 (``mcontrol6``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Match Control Type 2 (``mcontrol``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-CSR Address: 0x7A1 (``mcontrol6`` is accessible as ``tdata1`` when ``tdata1.TYPE`` is 0x6)
+CSR Address: 0x7A1 (``mcontrol`` is accessible as ``tdata1`` when ``tdata1.TYPE`` is 0x2)
 
 Reset Value: Not applicable
 
@@ -1517,24 +1446,20 @@ Reset Value: Not applicable
   +-------+-------------+----------------------------------------------------------------+
   | Bit#  | R/W         | Description                                                    |
   +=======+=============+================================================================+
-  | 31:28 | WARL (0x6)  | **TYPE**. 6 = Address match trigger.                           |
+  | 31:28 | WARL (0x2)  | **TYPE**. 2 = Address match trigger (legacy).                  |
   +-------+-------------+----------------------------------------------------------------+
   | 27    | WARL (0x1)  | **DMODE**. Only debug mode can write ``tdata`` registers.      |
   +-------+-------------+----------------------------------------------------------------+
-  | 26:25 | WARL (0x0)  | Hardwired to 0.                                                |
+  | 26:21 | WARL (0x0)  | **MASKMAX**. Hardwired to 0.                                   |
   +-------+-------------+----------------------------------------------------------------+
-  | 24    | WARL (0x0)  | **VS**. Hardwired to 0.                                        |
+  | 20    | WARL (0x0)  | **HIT**. Hardwired to 0.                                       |
   +-------+-------------+----------------------------------------------------------------+
-  | 23    | WARL (0x0)  | **VU**. Hardwired to 0.                                        |
+  | 19    | WARL (0x0)  | **SELECT**. Only address matching is supported.                |
   +-------+-------------+----------------------------------------------------------------+
-  | 22    | WARL (0x0)  | **HIT**. Hardwired to 0.                                       |
-  +-------+-------------+----------------------------------------------------------------+
-  | 21    | WARL (0x0)  | **SELECT**. Only address matching is supported.                |
-  +-------+-------------+----------------------------------------------------------------+
-  | 20    | WARL (0x0)  | **TIMING**. Break before the instruction at the specified      |
+  | 18    | WARL (0x0)  | **TIMING**. Break before the instruction at the specified      |
   |       |             | address.                                                       |
   +-------+-------------+----------------------------------------------------------------+
-  | 19:16 | WARL (0x0)  | **SIZE**. Match accesses of any size.                          |
+  | 17:16 | WARL (0x0)  | **SIZELO**. Match accesses of any size.                        |
   +-------+-------------+----------------------------------------------------------------+
   | 15:12 | WARL (0x1)  | **ACTION**. Enter debug mode on match.                         |
   +-------+-------------+----------------------------------------------------------------+
@@ -1599,6 +1524,67 @@ Reset Value: Not applicable
   | 5:0   | WARL (0x1)   | **ACTION**. Enter debug mode on match.                         |
   +-------+--------------+----------------------------------------------------------------+
 
+.. _csr-mcontrol6:
+
+Match Control Type 6 (``mcontrol6``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CSR Address: 0x7A1 (``mcontrol6`` is accessible as ``tdata1`` when ``tdata1.TYPE`` is 0x6)
+
+Reset Value: Not applicable
+
+.. table::
+  :widths: 10 20 70
+  :class: no-scrollbar-table
+
+  +-------+-------------+----------------------------------------------------------------+
+  | Bit#  | R/W         | Description                                                    |
+  +=======+=============+================================================================+
+  | 31:28 | WARL (0x6)  | **TYPE**. 6 = Address match trigger.                           |
+  +-------+-------------+----------------------------------------------------------------+
+  | 27    | WARL (0x1)  | **DMODE**. Only debug mode can write ``tdata`` registers.      |
+  +-------+-------------+----------------------------------------------------------------+
+  | 26    | WARL (0x0)  | **UNCERTAIN**. Hardwired to 0.                                 |
+  +-------+-------------+----------------------------------------------------------------+
+  | 25    |             | **HIT1**. Forms 2-bit WARL (0x0, 0x1) bitfield  with **HIT0**. |
+  +-------+-------------+----------------------------------------------------------------+
+  | 24    | WARL (0x0)  | **VS**. Hardwired to 0.                                        |
+  +-------+-------------+----------------------------------------------------------------+
+  | 23    | WARL (0x0)  | **VU**. Hardwired to 0.                                        |
+  +-------+-------------+----------------------------------------------------------------+
+  | 22    |             | **HIT0**. Forms 2-bit WARL (0x0, 0x1) bitfield  with **HIT1**. |
+  +-------+-------------+----------------------------------------------------------------+
+  | 21    | WARL (0x0)  | **SELECT**. Only address matching is supported.                |
+  +-------+-------------+----------------------------------------------------------------+
+  | 20:19 | WARL (0x0)  | Hardwired to 0.                                                |
+  +-------+-------------+----------------------------------------------------------------+
+  | 18:16 | WARL (0x0)  | **SIZE**. Match accesses of any size.                          |
+  +-------+-------------+----------------------------------------------------------------+
+  | 15:12 | WARL (0x1)  | **ACTION**. Enter debug mode on match.                         |
+  +-------+-------------+----------------------------------------------------------------+
+  | 11    | WARL (0x0)  | **CHAIN**. Hardwired to 0.                                     |
+  +-------+-------------+----------------------------------------------------------------+
+  | 10:7  | WARL (0x0*, | **MATCH**. 0: Address matches `tdata2`, 2: Address is greater  |
+  |       | 0x2, 0x3)   | than or equal to `tdata2`, 3: Address is less than `tdata2`.   |
+  +-------+-------------+----------------------------------------------------------------+
+  | 6     | WARL        | **M**. Match in machine mode.                                  |
+  +-------+-------------+----------------------------------------------------------------+
+  | 5     | WARL (0x0)  | **UNCERTAINEN**. Hardwired to 0.                               |
+  +-------+-------------+----------------------------------------------------------------+
+  | 4     | WARL (0x0)  | **S**. Hardwired to 0.                                         |
+  +-------+-------------+----------------------------------------------------------------+
+  | 3     | WARL        | **U**. Match in user mode.                                     |
+  +-------+-------------+----------------------------------------------------------------+
+  | 2     | WARL        | **EXECUTE**. Enable matching on instruction address.           |
+  +-------+-------------+----------------------------------------------------------------+
+  | 1     | WARL        | **STORE**. Enable matching on store address.                   |
+  +-------+-------------+----------------------------------------------------------------+
+  | 0     | WARL        | **LOAD**. Enable matching on load address.                     |
+  +-------+-------------+----------------------------------------------------------------+
+
+.. note::
+   The ``hit1`` (MSB) and ``hit0`` (LSB) bitfields form a 2-bit bitfield together that has WARL (0x0, 0x1) behavior.
+
 .. _csr-tdata1_disabled:
 
 Trigger Data 1 (``tdata1``) - ``disabled`` view
@@ -1623,6 +1609,10 @@ Reset Value: Not applicable
   | 26:0  | WARL (0x0)  | **DATA**.                                                      |
   +-------+-------------+----------------------------------------------------------------+
 
+.. note::
+   Writing 0x0 to ``tdata1`` disables the trigger and changes the value of ``tdata1`` to
+   0xF800_0000, which is the only supported value for a disabled trigger.
+
 .. _csr-tdata2:
 
 Trigger Data Register 2 (``tdata2``)
@@ -1641,18 +1631,44 @@ Detailed:
   +-------+------+------------------------------------------------------------------+
   | Bit#  | R/W  | Description                                                      |
   +=======+======+==================================================================+
-  | 31:0  | RW   | **DATA**                                                         |
+  | 31:0  | WARL | **DATA**                                                         |
   +-------+------+------------------------------------------------------------------+
 
-Accessible in Debug Mode or M-Mode, depending on **tdata1.dmode**.
-This register stores the instruction address, load address or store address to match against for a breakpoint trigger or the currently selected exception codes for an exception trigger.
+.. note::
+   The WARL behavior of ``tdata2`` depends on the values of ``tdata1.TYPE`` and ``tdata1.DMODE`` as described in
+   :ref:`csr-tdata2-type-0x2`, :ref:`csr-tdata2-type-0x5`, :ref:`csr-tdata2-type-0x6` and :ref:`csr-tdata2-type-0xf`.
 
-.. _csr-tdata3:
+.. _csr-tdata2-type-0x2:
 
-Trigger Data Register 3 (``tdata3``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Trigger Data Register 2 (``tdata2``) - View when ``tdata1.TYPE`` is 0x2
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-CSR Address: 0x7A3
+CSR Address: 0x7A2
+
+Reset Value: 0x0000_0000
+
+Detailed:
+
+.. table::
+  :widths: 10 20 70
+  :class: no-scrollbar-table
+
+  +-------+------+------------------------------------------------------------------+
+  | Bit#  | R/W  | Description                                                      |
+  +=======+======+==================================================================+
+  | 31:0  | WARL | **DATA**                                                         |
+  +-------+------+------------------------------------------------------------------+
+
+.. note::
+   Accessible in Debug Mode or M-Mode, depending on ``tdata1.DMODE``.
+   This register stores the instruction address, load address or store address to match against for a breakpoint trigger.
+
+.. _csr-tdata2-type-0x5:
+
+Trigger Data Register 2 (``tdata2``) - View when ``tdata1.TYPE`` is 0x5
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CSR Address: 0x7A2
 
 Reset Value: 0x0000_0000
 
@@ -1665,11 +1681,90 @@ Detailed:
   +-------+------------+------------------------------------------------------------------+
   | Bit#  | R/W        | Description                                                      |
   +=======+============+==================================================================+
-  | 31:0  | WARL (0x0) | Hardwired to 0.                                                  |
+  | 31:26 | WARL (0x0) | **DATA[31:26]**                                                  |
+  +-------+------------+------------------------------------------------------------------+
+  | 25    | WARL       | **DATA[25]**. Instruction parity/checksum fault.                 |
+  +-------+------------+------------------------------------------------------------------+
+  | 24    | WARL       | **DATA[24]**. Instruction bus fault.                             |
+  +-------+------------+------------------------------------------------------------------+
+  | 23:12 | WARL (0x0) | **DATA[23:12]**                                                  |
+  +-------+------------+------------------------------------------------------------------+
+  | 11    | WARL       | **DATA[11]**. Environment call from M-Mode (ECALL)               |
+  +-------+------------+------------------------------------------------------------------+
+  | 10:9  | WARL (0x0) | **DATA[10:9]**                                                   |
+  +-------+------------+------------------------------------------------------------------+
+  | 8     | WARL       | **DATA[8]**. Environment call from U-Mode (ECALL)                |
+  +-------+------------+------------------------------------------------------------------+
+  | 7     | WARL       | **DATA[7]**. Store/AMO access fault.                             |
+  +-------+------------+------------------------------------------------------------------+
+  | 6     | WARL (0x0) | **DATA[6]**                                                      |
+  +-------+------------+------------------------------------------------------------------+
+  | 5     | WARL       | **DATA[5]**. Load access fault.                                  |
+  +-------+------------+------------------------------------------------------------------+
+  | 4     | WARL (0x0) | **DATA[4]**                                                      |
+  +-------+------------+------------------------------------------------------------------+
+  | 3     | WARL       | **DATA[3]**. Breakpoint.                                         |
+  +-------+------------+------------------------------------------------------------------+
+  | 2     | WARL       | **DATA[2]**. Illegal instruction.                                |
+  +-------+------------+------------------------------------------------------------------+
+  | 1     | WARL       | **DATA[1]**. Instruction access fault.                           |
+  +-------+------------+------------------------------------------------------------------+
+  | 0     | WARL (0x0) | **DATA[0]**                                                      |
   +-------+------------+------------------------------------------------------------------+
 
-Accessible in Debug Mode or M-Mode.
-|corev| does not support the features requiring this register. CSR is hardwired to 0.
+.. note::
+   Accessible in Debug Mode or M-Mode, depending on ``tdata1.DMODE``.
+   This register stores the currently selected exception codes for an exception trigger.
+
+
+.. _csr-tdata2-type-0x6:
+
+Trigger Data Register 2 (``tdata2``) - View when ``tdata1.TYPE`` is 0x6
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CSR Address: 0x7A2
+
+Reset Value: 0x0000_0000
+
+Detailed:
+
+.. table::
+  :widths: 10 20 70
+  :class: no-scrollbar-table
+
+  +-------+------+------------------------------------------------------------------+
+  | Bit#  | R/W  | Description                                                      |
+  +=======+======+==================================================================+
+  | 31:0  | WARL | **DATA**                                                         |
+  +-------+------+------------------------------------------------------------------+
+
+.. note::
+   Accessible in Debug Mode or M-Mode, depending on ``tdata1.DMODE``.
+   This register stores the instruction address, load address or store address to match against for a breakpoint trigger.
+
+.. _csr-tdata2-type-0xf:
+
+Trigger Data Register 2 (``tdata2``) - View when ``tdata1.TYPE`` is 0xF
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CSR Address: 0x7A2
+
+Reset Value: 0x0000_0000
+
+Detailed:
+
+.. table::
+  :widths: 10 20 70
+  :class: no-scrollbar-table
+
+  +-------+------+------------------------------------------------------------------+
+  | Bit#  | R/W  | Description                                                      |
+  +=======+======+==================================================================+
+  | 31:0  | WARL | **DATA**                                                         |
+  +-------+------+------------------------------------------------------------------+
+
+.. note::
+   Accessible in Debug Mode or M-Mode, depending on ``tdata1.DMODE``.
 
 .. _csr-tinfo:
 
@@ -1678,7 +1773,7 @@ Trigger Info (``tinfo``)
 
 CSR Address: 0x7A4
 
-Reset Value: 0x0000_8060
+Reset Value: 0x0100_8064
 
 Detailed:
 
@@ -1689,9 +1784,11 @@ Detailed:
   +-------+------------+------------------------------------------------------------------+
   | Bit#  | R/W        | Description                                                      |
   +=======+============+==================================================================+
-  | 31:16 | WARL (0x0) | Hardwired to 0.                                                  |
+  | 31:24 | R (0x1)    | **VERSION**. Sdtrig version 1.0.                                 |
   +-------+------------+------------------------------------------------------------------+
-  | 15:0  | R (0x8060) | **INFO**. Types 0x5, 0x6 and 0xF are supported.                  |
+  | 23:16 | WARL (0x0) | Hardwired to 0.                                                  |
+  +-------+------------+------------------------------------------------------------------+
+  | 15:0  | R (0x8064) | **INFO**. Types 0x2, 0x5, 0x6 and 0xF are supported.             |
   +-------+------------+------------------------------------------------------------------+
 
 The **info** field contains one bit for each possible `type` enumerated in
@@ -1700,37 +1797,6 @@ supported by the currently selected trigger.  If the currently selected trigger
 does not exist, this field contains 1.
 
 Accessible in Debug Mode or M-Mode.
-
-.. _csr-tcontrol:
-
-Trigger Control (``tcontrol``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-CSR Address: 0x7A5
-
-Reset Value: 0x0000_0000
-
-Detailed:
-
-.. table::
-  :widths: 10 20 70
-  :class: no-scrollbar-table
-
-  +-------+-------------+------------------------------------------------------------------+
-  | Bit#  | R/W         | Description                                                      |
-  +=======+=============+==================================================================+
-  | 31:8  | WARL (0x0)  | Hardwired to 0.                                                  |
-  +-------+-------------+------------------------------------------------------------------+
-  | 7     | WARL (0x0)  | **MPTE**. Hardwired to 0.                                        |
-  +-------+-------------+------------------------------------------------------------------+
-  | 6:4   | WARL (0x0)  | Hardwired to 0.                                                  |
-  +-------+-------------+------------------------------------------------------------------+
-  | 3     | WARL (0x0)  | **MTE**. Hardwired to 0.                                         |
-  +-------+-------------+------------------------------------------------------------------+
-  | 2:0   | WARL (0x0)  | Hardwired to 0.                                                  |
-  +-------+-------------+------------------------------------------------------------------+
-
-|corev| does not support the features requiring this register. CSR is hardwired to 0.
 
 .. _csr-dcsr:
 
@@ -1801,11 +1867,13 @@ Detailed:
   :widths: 10 20 70
   :class: no-scrollbar-table
 
-  +-------------+-----------+-------------------------------------------------------------------------------------------------+
-  |   Bit #     |   R/W     |   Description                                                                                   |
-  +=============+===========+=================================================================================================+
-  | 31:0        | RW        | **DPC**. Debug PC                                                                               |
-  +-------------+-----------+-------------------------------------------------------------------------------------------------+
+  +-------------+------------+------------------------------------------------------------------------------------------------+
+  |   Bit #     |   R/W      |   Description                                                                                  |
+  +=============+============+================================================================================================+
+  | 31:1        | RW         | **DPC[31:1]**. Debug PC 31:1                                                                   |
+  +-------------+------------+------------------------------------------------------------------------------------------------+
+  |    0        | WARL (0x0) | **DPC[0]**. Hardwired to 0.                                                                    |
+  +-------------+------------+------------------------------------------------------------------------------------------------+
 
 When the core enters in Debug Mode, DPC contains the virtual address of
 the next instruction to be executed.
@@ -1880,11 +1948,11 @@ Detailed:
   :widths: 10 20 70
   :class: no-scrollbar-table
 
-  +-------+----------+------------------------------------------------------------------+
-  | Bit#  | R/W      | Description                                                      |
-  +=======+==========+==================================================================+
-  | 31:0  | R (0x0)  | Hardwired to 0.                                                  |
-  +-------+----------+------------------------------------------------------------------+
+  +-------+------------+------------------------------------------------------------------+
+  | Bit#  | R/W        | Description                                                      |
+  +=======+============+==================================================================+
+  | 31:0  | WARL (0x0) | Hardwired to 0.                                                  |
+  +-------+------------+------------------------------------------------------------------+
 
 Upper 32 Machine Cycle Counter (``mcycleh``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1937,11 +2005,11 @@ Detailed:
   :widths: 10 20 70
   :class: no-scrollbar-table
 
-  +-------+----------+------------------------------------------------------------------+
-  | Bit#  | R/W      | Description                                                      |
-  +=======+==========+==================================================================+
-  | 31:0  | R (0x0)  | Hardwired to 0.                                                  |
-  +-------+----------+------------------------------------------------------------------+
+  +-------+------------+------------------------------------------------------------------+
+  | Bit#  | R/W        | Description                                                      |
+  +=======+============+==================================================================+
+  | 31:0  | WARL (0x0) | Hardwired to 0.                                                  |
+  +-------+------------+------------------------------------------------------------------+
 
 CPU Control (``cpuctrl``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1993,13 +2061,18 @@ Detailed:
   :widths: 10 20 70
   :class: no-scrollbar-table
 
-  +-------------+-----------+------------------------------------------------------------------------+
-  |   Bit #     |   R/W     |   Description                                                          |
-  +=============+===========+========================================================================+
-  | 31:0        | RW        | Seed for LFSR0. Always reads as 0x0.                                   |
-  +-------------+-----------+------------------------------------------------------------------------+
+  +-------------+------------+------------------------------------------------------------------------+
+  |   Bit #     |   R/W      |   Description                                                          |
+  +=============+============+========================================================================+
+  | 31:0        | WARL (0x0) | Seed for LFSR0. Always reads as 0x0.                                   |
+  +-------------+------------+------------------------------------------------------------------------+
 
 The ``secureseed0`` CSR contains seed data for LFSR0.
+
+.. note::
+  Only the read-modify-write (swap/CSRRW) operation is useful for ``secureseed0``.
+  The behavior of the non-CSRRW variants (i.e. CSRRS/C, CSRRWI, CSRRS/CI) and CSRRW variants with **rs1** = **x0** on ``secureseed0`` are implementation-defined.
+  |corev| will treat such instructions as illegal instructions.
 
 Secure Seed 1
 ~~~~~~~~~~~~~
@@ -2013,13 +2086,18 @@ Detailed:
   :widths: 10 20 70
   :class: no-scrollbar-table
 
-  +-------------+-----------+------------------------------------------------------------------------+
-  |   Bit #     |   R/W     |   Description                                                          |
-  +=============+===========+========================================================================+
-  | 31:0        | RW        | Seed for LFSR1. Always reads as 0x0.                                   |
-  +-------------+-----------+------------------------------------------------------------------------+
+  +-------------+------------+------------------------------------------------------------------------+
+  |   Bit #     |   R/W      |   Description                                                          |
+  +=============+============+========================================================================+
+  | 31:0        | WARL (0x0) | Seed for LFSR1. Always reads as 0x0.                                   |
+  +-------------+------------+------------------------------------------------------------------------+
 
 The ``secureseed1`` CSR contains seed data for LFSR1.
+
+.. note::
+  Only the read-modify-write (swap/CSRRW) operation is useful for ``secureseed1``.
+  The behavior of the non-CSRRW variants (i.e. CSRRS/C, CSRRWI, CSRRS/CI) and CSRRW variants with **rs1** = **x0** on ``secureseed1`` are implementation-defined.
+  |corev| will treat such instructions as illegal instructions.
 
 Secure Seed 2
 ~~~~~~~~~~~~~
@@ -2033,13 +2111,18 @@ Detailed:
   :widths: 10 20 70
   :class: no-scrollbar-table
 
-  +-------------+-----------+------------------------------------------------------------------------+
-  |   Bit #     |   R/W     |   Description                                                          |
-  +=============+===========+========================================================================+
-  | 31:0        | RW        | Seed for LFSR2. Always reads as 0x0.                                   |
-  +-------------+-----------+------------------------------------------------------------------------+
+  +-------------+------------+------------------------------------------------------------------------+
+  |   Bit #     |   R/W      |   Description                                                          |
+  +=============+============+========================================================================+
+  | 31:0        | WARL (0x0) | Seed for LFSR2. Always reads as 0x0.                                   |
+  +-------------+------------+------------------------------------------------------------------------+
 
 The ``secureseed2`` CSR contains seed data for LFSR2.
+
+.. note::
+  Only the read-modify-write (swap/CSRRW) operation is useful for ``secureseed2``.
+  The behavior of the non-CSRRW variants (i.e. CSRRS/C, CSRRWI, CSRRS/CI) and CSRRW variants with **rs1** = **x0** on ``secureseed2`` are implementation-defined.
+  |corev| will treat such instructions as illegal instructions.
 
 Machine Vendor ID (``mvendorid``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2156,6 +2239,38 @@ Detailed:
   | 31:0 | R (0x0)  | Reserved                                |
   +------+----------+-----------------------------------------+
 
+.. _csr-mintstatus:
+
+Machine Interrupt Status (``mintstatus``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+CSR Address: 0xFB1
+
+Reset Value: 0x0000_0000
+
+Include Condition: ``CLIC`` = 1
+
+Detailed:
+
+.. table::
+  :widths: 10 20 70
+  :class: no-scrollbar-table
+
+  +-------------+------------+-------------------------------------------------------------------------+
+  |   Bit #     |   R/W      |           Description                                                   |
+  +=============+============+=========================================================================+
+  | 31:24       |   R        | **MIL**: Machine Interrupt Level                                        |
+  +-------------+------------+-------------------------------------------------------------------------+
+  | 23:16       |   R (0x0)  | Reserved. Hardwired to 0.                                               |
+  +-------------+------------+-------------------------------------------------------------------------+
+  | 15: 8       |   R (0x0)  | **SIL**: Supervisor Interrupt Level, hardwired to 0.                    |
+  +-------------+------------+-------------------------------------------------------------------------+
+  |  7: 0       |   R (0x0)  | **UIL**: User Interrupt Level, hardwired to 0.                          |
+  +-------------+------------+-------------------------------------------------------------------------+
+
+This register holds the active interrupt level for each privilege mode.
+Only Machine Interrupt Level is supported.
+
 .. only:: PMP
 
   Machine Security Configuration (``mseccfg``)
@@ -2178,7 +2293,7 @@ Detailed:
     +------+-------------+-----------------------------------------------------------------------------------------------------------------------------------+
     | 9    | R    (0x0)  | **SSEED**. Hardwired to 0.                                                                                                        |
     +------+-------------+-----------------------------------------------------------------------------------------------------------------------------------+
-    | 2    | R    (0x0)  | **USEED**. Hardwired to 0.                                                                                                        |
+    | 8    | R    (0x0)  | **USEED**. Hardwired to 0.                                                                                                        |
     +------+-------------+-----------------------------------------------------------------------------------------------------------------------------------+
     | 7:3  | WPRI (0x0)  | Hardwired to 0.                                                                                                                   |
     +------+-------------+-----------------------------------------------------------------------------------------------------------------------------------+
@@ -2470,8 +2585,8 @@ This applies to the following registers:
  - ``cpuctrl``
  - ``dcsr``
  - ``jvt``
- - ``mclicbase``
  - ``mepc``
+ - ``mcause``
  - ``mie``
  - ``mintstatus``
  - ``mintthresh``
@@ -2483,4 +2598,4 @@ This applies to the following registers:
  - ``mtvec``
  - ``mtvt``
  - ``pmpaddr*``
- - ``pmpcfg``
+ - ``pmpcfg*``

@@ -27,11 +27,14 @@ module cv32e40s_core_sva
   import cv32e40s_pkg::*;
   #(
     parameter int PMA_NUM_REGIONS = 0,
-    parameter bit SMCLIC = 0,
-    parameter int REGFILE_NUM_READ_PORTS = 2
+    parameter bit CLIC = 0,
+    parameter int unsigned REGFILE_NUM_READ_PORTS = 2,
+    parameter bit DEBUG = 1,
+    parameter int DBG_NUM_TRIGGERS = 1
   )
   (
   input logic        clk,
+  input logic        clk_i,
   input logic        rst_ni,
 
   input ctrl_fsm_t   ctrl_fsm,
@@ -41,6 +44,10 @@ module cv32e40s_core_sva
   input logic        mie_we,
   input logic [31:0] mip,
   input dcsr_t       dcsr,
+  input logic        if_valid,
+  input logic        id_ready,
+  input logic        first_op_if,
+  input logic        prefetch_is_mret_ptr_i,
   input              if_id_pipe_t if_id_pipe,
   input              id_stage_multi_op_id_stall,
   input logic        id_stage_id_valid,
@@ -48,6 +55,7 @@ module cv32e40s_core_sva
   input logic        irq_ack, // irq ack output
   input logic        irq_clic_shv, // ack'ed irq is a CLIC SHV
   input logic        irq_req_ctrl, // Interrupt controller request an interrupt
+  input logic        irq_wu_ctrl,
   input ex_wb_pipe_t ex_wb_pipe,
   input id_ex_pipe_t id_ex_pipe,
   input logic        sys_en_id,
@@ -68,7 +76,7 @@ module cv32e40s_core_sva
   input  logic        instr_rvalid_i,
   input  logic        instr_rvalidpar_i,
   input  logic [31:0] instr_addr_o,
-  input  logic [11:0] instr_achk_o,
+  input  logic [12:0] instr_achk_o,
   input  logic [1:0]  instr_memtype_o,
   input  logic [2:0]  instr_prot_o,
   input  logic        instr_dbg_o,
@@ -86,7 +94,7 @@ module cv32e40s_core_sva
   input  logic        data_we_o,
   input  logic [3:0]  data_be_o,
   input  logic [31:0] data_addr_o,
-  input  logic [11:0] data_achk_o,
+  input  logic [12:0] data_achk_o,
   input  logic [1:0]  data_memtype_o,
   input  logic [2:0]  data_prot_o,
   input  logic        data_dbg_o,
@@ -94,11 +102,16 @@ module cv32e40s_core_sva
   input  logic [31:0] data_rdata_i,
   input  logic [4:0]  data_rchk_i,
   input  logic        data_err_i,
+  input logic        fetch_enable_i,
+  input logic        debug_req_i,
+
   input alu_op_a_mux_e alu_op_a_mux_sel_id_i,
   input alu_op_b_mux_e alu_op_b_mux_sel_id_i,
   input logic [31:0]   operand_a_id_i,
   input logic [31:0]   operand_b_id_i,
   input logic [31:0]   jalr_fw_id_i,
+  input logic          last_op_id,
+  input logic          first_op_id,
   input logic [31:0]   rf_wdata_wb,
   input logic          rf_we_wb,
   input rf_addr_t      rf_waddr_wb,
@@ -106,17 +119,26 @@ module cv32e40s_core_sva
   input rf_addr_t      rf_raddr_id[REGFILE_NUM_READ_PORTS],
   input rf_data_t      rf_rdata_id[REGFILE_NUM_READ_PORTS],
 
+  input logic [31:0]   lsu_wpt_match_wb,
+
   input logic        alu_jmpr_id_i,
   input logic        alu_en_id_i,
 
   // probed controller signals
   input logic        ctrl_debug_mode_n,
-  input logic        ctrl_pending_debug,
-  input logic        ctrl_debug_allowed,
+  input logic        ctrl_pending_async_debug,
+  input logic        ctrl_async_debug_allowed,
+  input logic        ctrl_pending_sync_debug,
+  input logic        ctrl_sync_debug_allowed,
   input logic        ctrl_interrupt_allowed,
   input logic        ctrl_pending_interrupt,
   input ctrl_byp_t   ctrl_byp,
   input logic [2:0]  ctrl_debug_cause_n,
+  input logic        ctrl_pending_nmi,
+  input ctrl_state_e ctrl_fsm_cs,
+
+  input logic        debug_halted_o,
+
   // probed cs_registers signals
   input logic [31:0] cs_registers_mie_q,
   input logic [31:0] cs_registers_mepc_n,
@@ -133,10 +155,19 @@ module cv32e40s_core_sva
   input logic        jmpr_unqual_id_bypass,
   input logic        mret_self_stall_bypass,
   input logic        jumpr_self_stall_bypass,
-  input logic        last_sec_op_id_i,  // todo: liekely not needed when using last_op_id.
-  input logic        last_op_id);
+  input logic        last_sec_op_id_i,
 
-if (SMCLIC) begin
+  input logic        core_sleep_o,
+  input logic        fencei_flush_req_o,
+  input logic        debug_havereset_o,
+  input logic        debug_running_o,
+  input logic [1:0]  lsu_cnt_q,
+  input logic [1:0]  resp_filter_bus_cnt_q,
+  input logic [1:0]  resp_filter_core_cnt_q,
+  input write_buffer_state_e write_buffer_state
+);
+
+if (CLIC) begin
   property p_clic_mie_tieoff;
     @(posedge clk)
     |mie == 1'b0;
@@ -149,9 +180,8 @@ if (SMCLIC) begin
   endproperty
   a_clic_mip_tieoff : assert property(p_clic_mip_tieoff) else `uvm_error("core", "MIP not tied to 0 in CLIC mode")
 
-  //todo: add CLIC related assertions (level thresholds etc)
 end else begin
-  // SMCLIC == 0
+  // CLIC == 0
   // Check that a taken IRQ is actually enabled (e.g. that we do not react to an IRQ that was just disabled in MIE)
   // The actual mie_n value may be different from mie_q if mie is not
   // written to.
@@ -176,7 +206,7 @@ end else begin
 
   a_irq_enabled_1 : assert property(p_irq_enabled_1) else `uvm_error("core", "Assertion a_irq_enabled_1 failed")
 
-  // Assert that no pointer can be in any pipeline stage when SMCLIC == 0
+  // Assert that no pointer can be in any pipeline stage when CLIC == 0
   property p_clic_noptr_in_pipeline;
     @(posedge clk) disable iff (!rst_ni)
       1'b1
@@ -186,7 +216,7 @@ end else begin
   endproperty
 
   a_clic_noptr_in_pipeline : assert property(p_clic_noptr_in_pipeline) else `uvm_error("core", "CLIC pointer in pipeline when CLIC is not configured.")
-end // SMCLIC
+end // CLIC
 
 // First illegal instruction decoded
 logic         first_illegal_found;
@@ -201,6 +231,9 @@ logic [31:0]  expected_umode_ecall_mepc;
 logic [31:0]  expected_ebrk_mepc;
 logic [31:0]  expected_instr_err_mepc;
 logic [31:0]  expected_instr_mpuerr_mepc;
+
+logic pending_debug;
+assign pending_debug = (ctrl_pending_async_debug && ctrl_async_debug_allowed) || (ctrl_pending_sync_debug && ctrl_sync_debug_allowed);
 
 always_ff @(posedge clk , negedge rst_ni)
   begin
@@ -222,42 +255,42 @@ always_ff @(posedge clk , negedge rst_ni)
       // The code below checks for first occurence of each exception type in WB
       // Multiple exceptions may occur at the same time, so the following
       // code needs to check priority of what to expect
-      if (!first_illegal_found && ex_wb_pipe.instr_valid && !irq_ack && !(ctrl_pending_debug && ctrl_debug_allowed) &&
+      if (!first_illegal_found && ex_wb_pipe.instr_valid && !irq_ack && !pending_debug &&
         !(ex_wb_pipe.instr.bus_resp.err || (ex_wb_pipe.instr.mpu_status != MPU_OK)) &&
         !(ctrl_fsm.pc_mux == PC_TRAP_NMI) &&
           ex_wb_pipe.illegal_insn && !ctrl_debug_mode_n) begin
         first_illegal_found   <= 1'b1;
         expected_illegal_mepc <= ex_wb_pipe.pc;
       end
-      if (!first_mmode_ecall_found && ex_wb_pipe.instr_valid && !irq_ack && !(ctrl_pending_debug && ctrl_debug_allowed) &&
+      if (!first_mmode_ecall_found && ex_wb_pipe.instr_valid && !irq_ack && !pending_debug &&
         !(ex_wb_pipe.instr.bus_resp.err || (ex_wb_pipe.instr.mpu_status != MPU_OK) || ex_wb_pipe.illegal_insn) &&
         !(ctrl_fsm.pc_mux == PC_TRAP_NMI) &&
           ex_wb_pipe.sys_en &&  ex_wb_pipe.sys_ecall_insn && !ctrl_debug_mode_n && (priv_lvl == PRIV_LVL_M)) begin
         first_mmode_ecall_found   <= 1'b1;
         expected_mmode_ecall_mepc <= ex_wb_pipe.pc;
       end
-      if (!first_umode_ecall_found && ex_wb_pipe.instr_valid && !irq_ack && !(ctrl_pending_debug && ctrl_debug_allowed) &&
+      if (!first_umode_ecall_found && ex_wb_pipe.instr_valid && !irq_ack && !pending_debug &&
         !(ex_wb_pipe.instr.bus_resp.err || (ex_wb_pipe.instr.mpu_status != MPU_OK) || ex_wb_pipe.illegal_insn) &&
         !(ctrl_fsm.pc_mux == PC_TRAP_NMI) &&
           ex_wb_pipe.sys_en &&  ex_wb_pipe.sys_ecall_insn && !ctrl_debug_mode_n && (priv_lvl == PRIV_LVL_U)) begin
         first_umode_ecall_found   <= 1'b1;
         expected_umode_ecall_mepc <= ex_wb_pipe.pc;
       end
-      if (!first_ebrk_found && ex_wb_pipe.instr_valid && !irq_ack && !(ctrl_pending_debug && ctrl_debug_allowed) &&
+      if (!first_ebrk_found && ex_wb_pipe.instr_valid && !irq_ack && !pending_debug &&
         !(ex_wb_pipe.instr.bus_resp.err || (ex_wb_pipe.instr.mpu_status != MPU_OK) || ex_wb_pipe.illegal_insn || (ex_wb_pipe.sys_en && ex_wb_pipe.sys_ecall_insn)) &&
         !(ctrl_fsm.pc_mux == PC_TRAP_NMI) && ex_wb_pipe.sys_en && ex_wb_pipe.sys_ebrk_insn) begin
         first_ebrk_found   <= 1'b1;
         expected_ebrk_mepc <= ex_wb_pipe.pc;
       end
 
-      if (!first_instr_err_found && (ex_wb_pipe.instr.mpu_status == MPU_OK) && !irq_ack && !(ctrl_pending_debug && ctrl_debug_allowed) &&
+      if (!first_instr_err_found && (ex_wb_pipe.instr.mpu_status == MPU_OK) &&!irq_ack && !pending_debug &&
          !(ctrl_fsm.pc_mux == PC_TRAP_NMI) &&
           ex_wb_pipe.instr_valid && ex_wb_pipe.instr.bus_resp.err && !ctrl_debug_mode_n ) begin
         first_instr_err_found   <= 1'b1;
         expected_instr_err_mepc <= ex_wb_pipe.pc;
       end
 
-      if (!first_instr_mpuerr_found && ex_wb_pipe.instr_valid && !irq_ack && !(ctrl_pending_debug && ctrl_debug_allowed) &&
+      if (!first_instr_mpuerr_found && ex_wb_pipe.instr_valid && !irq_ack && !pending_debug &&
          !(ctrl_fsm.pc_mux == PC_TRAP_NMI) &&
           (ex_wb_pipe.instr.mpu_status != MPU_OK) && !ctrl_debug_mode_n) begin
         first_instr_mpuerr_found   <= 1'b1;
@@ -381,10 +414,38 @@ always_ff @(posedge clk , negedge rst_ni)
     end
   endgenerate
 
-  // For checking single step, ID stage is used as it contains a 'multi_op_id_stall' signal.
-  // This makes it easy to count misaligned LSU ins as one instruction instead of two.
-  logic inst_taken;
-  assign inst_taken = id_stage_id_valid && ex_ready && last_op_id && !id_stage_multi_op_id_stall; // todo: the && !id_stage_multi_cycle_id_stall signal should now no longer be needed
+  // Count number of instruction going from IF to ID while not in debug mode
+  // Counting on first_op to avoid the case where a operation with last_op=0 will receive
+  // an abort_op later in the pipeline, effectively making it a last_op.
+  logic [31:0] inst_taken_if;
+  always_ff @(posedge clk , negedge rst_ni) begin
+    if (rst_ni == 1'b0) begin
+      inst_taken_if <= 32'd0;
+    end else begin
+      if (ctrl_fsm.debug_mode) begin
+        inst_taken_if <= 32'd0;
+      end else if (if_valid && id_ready && first_op_if) begin
+        inst_taken_if <= inst_taken_if + 32'd1;
+      end
+    end
+  end
+
+  // Count number of instruction going from ID to EX while not in debug mode
+  // Counting on first_op to avoid the case where a operation with last_op=0 will receive
+  // an abort_op later in the pipeline, effectively making it a last_op.
+  logic [31:0] inst_taken_id;
+  always_ff @(posedge clk , negedge rst_ni) begin
+    if (rst_ni == 1'b0) begin
+      inst_taken_id <= 32'd0;
+    end else begin
+      if (ctrl_fsm.debug_mode) begin
+        inst_taken_id <= 32'd0;
+      end else if (id_stage_id_valid && ex_ready && first_op_id) begin
+        inst_taken_id <= inst_taken_id + 32'd1;
+      end
+    end
+  end
+
 
   // Support for single step assertion
   // In case of single step + taken interrupt, the first instruction
@@ -406,28 +467,19 @@ always_ff @(posedge clk , negedge rst_ni)
     end
 
 
-  // Single step without interrupts
-  // Should issue exactly one instruction from ID before entering debug_mode
-  a_single_step_no_irq :
-    assert property (@(posedge clk) disable iff (!rst_ni || interrupt_taken)
-                     (inst_taken && dcsr.step && !ctrl_fsm.debug_mode)
-                     ##1 inst_taken [->1]
-                     |-> (ctrl_fsm.debug_mode && dcsr.step))
-      else `uvm_error("core", "Assertion a_single_step_no_irq failed")
-
-// todo: add similar assertion as above to check that only one instruction moves from IF to ID while taking a single step (rename inst_taken to inst_taken_id and introduce similar inst_taken_if signal)
-
-if (SMCLIC) begin
-  // Non-SHV interrupt taken during single stepping.
-  // If this happens, no instructions should retire until the core is in debug mode.
-  // irq_ack is asserted during FUNCTIONAL state. debug_mode_n will be set during
-  // DEBUG_TAKEN one cycle later
-  a_single_step_with_irq_nonshv :
-    assert property (@(posedge clk) disable iff (!rst_ni)
-                      (dcsr.step && !ctrl_fsm.debug_mode && irq_ack && !irq_clic_shv)
-                      |->
-                      !wb_valid ##1 (!wb_valid && ctrl_debug_mode_n && dcsr.step))
-      else `uvm_error("core", "Assertion a_single_step_with_irq_nonshv failed")
+if (CLIC) begin
+  if (DEBUG) begin
+    // Non-SHV interrupt taken during single stepping.
+    // If this happens, no instructions should retire until the core is in debug mode.
+    // irq_ack is asserted during FUNCTIONAL state. debug_mode_n will be set during
+    // DEBUG_TAKEN one cycle later
+    a_single_step_with_irq_nonshv :
+      assert property (@(posedge clk) disable iff (!rst_ni)
+                        (dcsr.step && !ctrl_fsm.debug_mode && irq_ack && !irq_clic_shv)
+                        |->
+                        !wb_valid ##1 (!wb_valid && ctrl_debug_mode_n && dcsr.step))
+        else `uvm_error("core", "Assertion a_single_step_with_irq_nonshv failed")
+  end // DEBUG
 
   // An SHV CLIC interrupt will first do one fetch to get a function pointer,
   // then a second fetch to the actual interrupt handler. If the first fetch has
@@ -437,10 +489,6 @@ if (SMCLIC) begin
   // External debug entry and interrupts (including NMIs) are not allowed to be taken while there is
   // a live pointer in WB (IF-ID: guarded by POINTER_FETCH STATE, EX-WB: guarded by clic_ptr_in_pipeline).
   //   - this could cause the address of the pointer to end up in DPC, making dret jumping to a mtvt entry instead of an instruction.
-  /*
-      todo: Reintroduce (and update) when debug single step logic has been updated and POINTER_FETCH state removed.
-             -should likely flop the event that causes single step entry to evaluate all debug reasons
-              when the pipeline is guaranteed to not disallow any debug reason to enter debug.
   a_single_step_with_irq_shv :
     assert property (@(posedge clk) disable iff (!rst_ni)
                       (dcsr.step && !ctrl_fsm.debug_mode && irq_ack && irq_clic_shv)
@@ -450,7 +498,6 @@ if (SMCLIC) begin
                       or
                          (!wb_valid until (ctrl_debug_mode_n && (ctrl_debug_cause_n == DBG_CAUSE_HALTREQ)))) // external debug happened before pointer reached WB
       else `uvm_error("core", "Assertion a_single_step_with_irq_shv failed")
-*/
 
 end else begin
   // Interrupt taken during single stepping.
@@ -464,22 +511,35 @@ end else begin
                       !wb_valid ##1 (!wb_valid && ctrl_debug_mode_n && dcsr.step))
       else `uvm_error("core", "Assertion a_single_step_with_irq failed")
 end
-  // Check that only a single instruction can retire during single step
-  a_single_step_retire :
-  assert property (@(posedge clk) disable iff (!rst_ni)
-                    (wb_valid && last_op_wb && dcsr.step && !ctrl_fsm.debug_mode)
-                    ##1 wb_valid [->1]
-                    |-> (ctrl_fsm.debug_mode && dcsr.step))
-    else `uvm_error("core", "Multiple instructions retired during single stepping")
 
 
-  // Check priviledge level consistency accross the pipeline.
-  // The only scenario where priv_lvl_if_q and priv_lvl are allowed to differ is when there's an MRET in the pipe
-  // MRET in ID will immediatly update the priviledge level for the IF stage, but priv_lvl won't be updated until the MRET retires in the WB stage
+  // Check privilege level consistency accross the pipeline.
+  // The only scenario where priv_lvl_if_q and priv_lvl are allowed to differ is when there's an MRET or mret pointer in the pipe
+  // MRET in ID will immediately update the privilege level for the IF stage, but priv_lvl won't be updated until the MRET retires in the WB stage
+  // The actual privilege level used for instructions following an mret is propagated from the IF stage along with the instructions, giving proper
+  // privilege level even though the mret will not update the architectural state until it reaches WB.
+  //
+  // mret will change IF priv while in ID, and the difference between IF stage privilege and the architectural privilege may stay until the mret retires.
+  // If an mret generates a CLIC pointer fetch (mcause.minhv == 1), the mret is split in two operations in the ID stage. The architectural state
+  // will only update when the last part (the pointer) reaches WB.
+  // For the assert, we can thus allow a privilege level difference if an mret is in ID, EX or WB, or an mret pointer is in EX or WB. See pipeline diagram.
+  //
+  //   IF     |  ID     |  EX     |  WB     |
+  //----------|---------|---------|---------|
+  // <killed> | mret    |   x     |  x      | // mret in ID kills IF
+  // pointer  | <>      | mret    |  x      | // Pointer in IF, mret is in EX
+  // <killed> | pointer |   <>    | mret    | // pointer in ID kills IF and jumps to pointer, mret is in WB (no state update due to pointer restart)
+  //     x    |     x   | pointer |  <>     | // pointer is in EX
+  //     x    |     x   |    x    | pointer | // pointer is in WB (will update architectural state)
+
   a_priv_lvl_consistency :
     assert property (@(posedge clk) disable iff (!rst_ni)
-                     (priv_lvl_if_q != priv_lvl) |-> ((sys_en_id && sys_mret_insn_id) || (id_ex_pipe.sys_en && id_ex_pipe.sys_mret_insn) || (ex_wb_pipe.sys_en && ex_wb_pipe.sys_mret_insn)))
-    else `uvm_error("core", "IF priviledge level not consistent with current priviledge level")
+                     (priv_lvl_if_q != priv_lvl)
+                     |->
+                     ((sys_en_id && sys_mret_insn_id) || (id_ex_pipe.sys_en && id_ex_pipe.sys_mret_insn) || (ex_wb_pipe.sys_en && ex_wb_pipe.sys_mret_insn) ||
+                      (id_ex_pipe.instr_valid && id_ex_pipe.instr_meta.mret_ptr) ||
+                      (ex_wb_pipe.instr_valid && ex_wb_pipe.instr_meta.mret_ptr)))
+    else `uvm_error("core", "IF privilege level not consistent with current privilege level")
 
   // Assert that change to user mode only happens when and MRET is in ID and mstatus.mpp == PRIV_LVL_U
   // or a DRET is in WB and dcsr.prv == PRIV_LVL_U
@@ -488,7 +548,7 @@ end
                      $changed(priv_lvl_if) && (priv_lvl_if == PRIV_LVL_U) |->
                      ((sys_en_id && sys_mret_insn_id) && if_id_pipe.instr_valid && (cs_registers_mstatus_q.mpp == PRIV_LVL_U)) ||
                      ((ex_wb_pipe.instr_valid && ex_wb_pipe.sys_dret_insn && (dcsr.prv == PRIV_LVL_U))))
-    else `uvm_error("core", "IF priviledge level changed to user mode when there's no MRET in ID stage")
+    else `uvm_error("core", "IF privilege level changed to user mode when there's no MRET in ID stage")
 
   // Assert that MPRV is cleared when privilege mode is changed to user
   a_priv_lvl_u_mode_mprv_clr:
@@ -512,21 +572,21 @@ end
     assert property (@(posedge clk) disable iff (!rst_ni)
                      ##1 $changed(priv_lvl_if) && (priv_lvl_if == PRIV_LVL_M) |->
                      (ctrl_fsm.pc_set && pc_mux_is_trap || ctrl_fsm.kill_if))
-    else `uvm_error("core", "IF priviledge level changed to user mode when there's no MRET in ID stage")
+    else `uvm_error("core", "IF privilege level changed to user mode when there's no MRET in ID stage")
 
-  // Assert that all exceptions trap to machine mode, except when in debug mode (todo: revisit when debug related part of user mode is implemented)
+  // Assert that all exceptions trap to machine mode
   a_priv_lvl_exception :
     assert property (@(posedge clk) disable iff (!rst_ni)
-                      (!(ctrl_fsm.debug_mode || ctrl_fsm.debug_csr_save) && ctrl_fsm.pc_set && pc_mux_is_trap)
+                      (ctrl_fsm.pc_set && pc_mux_is_trap)
                       |-> (priv_lvl_if == PRIV_LVL_M))
     else `uvm_error("core", "Exception not trapping to machine mode")
 
-  // Assert that jumps to mepc is done with priviledge level from mstatus.mpp
+  // Assert that jumps to mepc is done with privilege level from mstatus.mpp
   a_priv_lvl_mepc :
     assert property (@(posedge clk) disable iff (!rst_ni)
                       (ctrl_fsm.pc_set && (ctrl_fsm.pc_mux == PC_MRET))
                       |-> (priv_lvl_if == cs_registers_mstatus_q.mpp))
-    else `uvm_error("core", "MEPC fetch not performed with priviledge level from mstatus.mpp")
+    else `uvm_error("core", "MEPC fetch not performed with privilege level from mstatus.mpp")
 
   // Check that instruction fetches are always word aligned
   a_instr_addr_word_aligned :
@@ -572,6 +632,11 @@ end
     assert property (@(posedge clk) disable iff (!rst_ni)
                     1'b1 |-> !pc_err_if)
           else `uvm_error("core", "pc_err_if shall be zero.")
+
+  a_no_major_exception_err:
+    assert property (@(posedge clk) disable iff (!rst_ni)
+                    1'b1 |-> !ctrl_fsm.exception_alert_major)
+          else `uvm_error("core", "ctrl_fsm.exception_alert_major shall be zero.")
 
   // There should be no parity error on output signals
   logic instr_reqpar_expected;
@@ -638,16 +703,17 @@ end
           else `uvm_error("core", "Parity mismatch.")
 
   // There should be no checksum error on output signals
-  logic [11:0] instr_achk_expected;
-  logic [11:0] data_achk_expected;
+  logic [12:0] instr_achk_expected;
+  logic [12:0] data_achk_expected;
 
   assign instr_achk_expected = {
     ^{8'b0},
     ^{8'b0},
     ^{8'b0},
     ^{8'b0},
-    ^{6'b0},
     ~^{instr_dbg_o},
+    ^{6'b0},
+    ^{8'h0},
     ~^{4'b1111, 1'b0},
     ~^{instr_prot_o[2:0], instr_memtype_o[1:0]},
     ^{instr_addr_o[31:24]},
@@ -661,8 +727,9 @@ end
     ^{data_wdata_o[23:16]},
     ^{data_wdata_o[15:8]},
     ^{data_wdata_o[7:0]},
-    ^{6'b0},
     ~^{data_dbg_o},
+    ^{6'b0},
+    ^{8'h0},
     ~^{data_be_o[3:0], data_we_o},
     ~^{data_prot_o[2:0], data_memtype_o[1:0]},
     ^{data_addr_o[31:24]},
@@ -680,7 +747,7 @@ end
 logic mret_self_stall_qual;
 assign mret_self_stall_qual = ((sys_en_id && sys_mret_unqual_id_bypass && last_sec_op_id_i) && // MRET 2/2 in ID
                               ((id_ex_pipe.sys_en && id_ex_pipe.sys_mret_insn && !id_ex_pipe.last_op && id_ex_pipe.instr_valid) || // mret 1/2 in EX
-                               (ex_wb_pipe.sys_en && ex_wb_pipe.sys_mret_insn && !ex_wb_pipe.last_op     && ex_wb_pipe.instr_valid))) &&  // mret 1/2 in WB
+                               (ex_wb_pipe.sys_en && ex_wb_pipe.sys_mret_insn && !ex_wb_pipe.last_op && ex_wb_pipe.instr_valid))) &&  // mret 1/2 in WB
                                !(id_ex_pipe.sys_en && id_ex_pipe.sys_mret_insn && id_ex_pipe.last_op && id_ex_pipe.instr_valid);
 a_mret_self_stall_qual:
   assert property (@(posedge clk) disable iff (!rst_ni)
@@ -711,7 +778,7 @@ a_jumpr_self_stall_qual:
   a_tbljmp_stall: assert property(p_tbljmp_stall)
     else `uvm_error("core", "Table jump not stalled while CSR is written");
 
-if (!SMCLIC) begin
+if (!CLIC) begin
   // Check that a pending interrupt is taken as soon as possible after being enabled
   property p_mip_mie_write_enable;
     @(posedge clk) disable iff (!rst_ni)
@@ -722,6 +789,21 @@ if (!SMCLIC) begin
   endproperty;
 
   a_mip_mie_write_enable: assert property(p_mip_mie_write_enable)
+    else `uvm_error("core", "Interrupt not taken soon enough after enabling");
+
+  // Check that only NMI and external debug take presedence over interrupts after being enabled by mret or CSR writes
+  property p_irq_pri;
+    @(posedge clk) disable iff (!rst_ni)
+    ( !irq_req_ctrl  // No interrupt pending
+       ##1          // Next cycle
+       irq_req_ctrl && $stable(mip) && !(ctrl_fsm.debug_mode || (dcsr.step && !dcsr.stepie)) && // Interrupt pending but irq inputs are unchanged
+       (ctrl_fsm_cs != DEBUG_TAKEN) &&  // Make sure we are not handling a debug entry already (could be a single stepped mret enabling interrupts for instance)
+       !(ctrl_pending_nmi || ctrl_pending_async_debug)   // No pending events with higher priority than interrupts are taking place
+       |->
+       ctrl_fsm.irq_ack);  // We must take the interrupt if enabled (mret or CSR write) and no NMI or external debug is pending
+  endproperty;
+
+  a_irq_pri: assert property(p_irq_pri)
     else `uvm_error("core", "Interrupt not taken soon enough after enabling");
 
   // Check a pending interrupt that is disabled is actually not taken
@@ -735,6 +817,21 @@ if (!SMCLIC) begin
 
   a_mip_mie_write_disable: assert property(p_mip_mie_write_disable)
     else `uvm_error("core", "Interrupt taken after disabling");
+
+  // If an interrupt wakeup is signalled while the core is in the SLEEP state, an interrupt
+  // request must be asserted in the next cycle if interrupts are globally enabled.
+  property p_req_after_wake;
+    @(posedge clk) disable iff (!rst_ni)
+    (  (ctrl_fsm_cs == SLEEP) &&  // Core is in sleep state
+        irq_wu_ctrl               // Wakeup requested
+        |=>
+        (irq_req_ctrl)  // interrupt must be requested
+        or
+        (!irq_req_ctrl && !(cs_registers_mstatus_q.mie || (priv_lvl < PRIV_LVL_M)))); // unless interrupts are disabled
+  endproperty;
+
+  a_req_after_wake: assert property(p_req_after_wake)
+    else `uvm_error("core", "No interrupt request after wakeup signal");
 end
 
 // Clearing external interrupts via a store instruction causes irq_i to go low the next cycle.
@@ -781,5 +878,126 @@ endproperty;
 
 a_hint_id_wb: assert property(p_dummy_id_wb)
   else `uvm_error("core", "X0 not stable for hint instruction in ID")
-endmodule
 
+a_sleep_inactive_signals:
+assert property (@(posedge clk_i) disable iff (!rst_ni)
+                 (core_sleep_o == 1'b1)
+                 |->
+                 !(instr_req_o ||
+                   data_req_o  ||
+                   fencei_flush_req_o ||
+                   debug_havereset_o ||
+                   debug_halted_o) &&
+                 debug_running_o &&
+                 (lsu_cnt_q == 2'b00) &&
+                 (resp_filter_bus_cnt_q == 2'b00) &&
+                 (resp_filter_core_cnt_q == 2'b00) &&
+                 (write_buffer_state == WBUF_EMPTY))
+  else `uvm_error("core", "Signals active while core_sleep_o=1")
+
+
+generate
+  if (!DEBUG) begin
+    a_nodebug_never_debug:
+      assert property (@(posedge clk_i) disable iff (!rst_ni)
+                      !ctrl_fsm.debug_mode)
+          else `uvm_error("core", "Debug mode entered without support for debug.")
+
+    a_nodebug_never_debug_halted:
+      assert property (@(posedge clk_i) disable iff (!rst_ni)
+                      !debug_halted_o)
+          else `uvm_error("core", "Debug_halated_o set without support for debug.")
+
+    a_nodebug_never_instr_dbg:
+      assert property (@(posedge clk_i) disable iff (!rst_ni)
+                      !instr_dbg_o)
+          else `uvm_error("core", "instr_dbg_o set without support for debug.")
+
+    a_nodebug_never_data_dbg:
+      assert property (@(posedge clk_i) disable iff (!rst_ni)
+                      !data_dbg_o)
+          else `uvm_error("core", "data_dbg_o set without support for debug.")
+  end else begin
+    // DEBUG related assertions
+
+    // If debug_req_i is asserted when fetch_enable_i gets asserted we should not execute any
+    // instruction until the core is in debug mode.
+    a_reset_into_debug:
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+                    (ctrl_fsm_cs == RESET) &&
+                    fetch_enable_i &&
+                    debug_req_i
+                    ##1
+                    debug_req_i // Controller gets a one cycle delayed fetch enable, must keep debug_req_i asserted for two cycles
+                    |->
+                    !wb_valid until (wb_valid && ctrl_fsm.debug_mode))
+      else `uvm_error("controller", "Debug out of reset but executed instruction outside debug mode")
+
+    // When entering debug out of reset, the first fetch must also flag debug on the instruction OBI interface
+    a_first_fetch_debug:
+    assert property (@(posedge clk_i) disable iff (!rst_ni)
+                    (ctrl_fsm_cs == RESET) &&
+                    fetch_enable_i &&
+                    debug_req_i
+                    ##1
+                    debug_req_i // Controller gets a one cycle delayed fetch enable, must keep debug_req_i asserted for two cycles
+                    |->
+                    !instr_req_o until (instr_req_o && instr_dbg_o))
+      else `uvm_error("controller", "Debug out of reset but fetched without setting instr_dbg_o")
+
+    // Check that only a single instruction can retire during single step
+    a_single_step_retire :
+    assert property (@(posedge clk) disable iff (!rst_ni)
+                      (wb_valid && last_op_wb && dcsr.step && !ctrl_fsm.debug_mode)
+                      ##1 wb_valid [->1]
+                      |-> (ctrl_fsm.debug_mode && dcsr.step))
+      else `uvm_error("core", "Multiple instructions retired during single stepping")
+
+    // Single step should issue exactly one instruction from IF (and ID) before entering debug_mode.
+    // Exception are for cases where the pipeline is killed before any instruction exits ID or there has been
+    // two inst_taken_id/if due to CLIC SHV or mret pointers.
+    // 1: CLIC SHV is taken after an instruction exits ID. This causes the CLIC pointer to pass through
+    //    the pipeline before the core can enter debug.
+    // 2: An mret instruction causes a CLIC pointer fecth (mcause.minhv==1). The pointer must reach WB
+    //    before the core can enter debug.
+    a_single_step_no_irq_id :
+    assert property (@(posedge clk) disable iff (!rst_ni)
+                      (ctrl_fsm_cs == DEBUG_TAKEN) &&
+                      dcsr.step &&
+                      !ctrl_fsm.debug_mode
+                      |->
+                      (inst_taken_id == 32'd1)                                                || // Exactly one instruction went from ID to EX
+                      (inst_taken_id == 32'd0) && (ctrl_fsm.debug_cause == DBG_CAUSE_HALTREQ) || // External debug before any instruction
+                      (inst_taken_id == 32'd0) && $past(ctrl_fsm.irq_ack)                     || // Interrupt taken before any instruction
+                      (inst_taken_id == 32'd0) && $past(ctrl_pending_nmi)                     || // NMI taken before any instruction
+                      (inst_taken_id == 32'd2) && $past(ex_wb_pipe.instr_meta.clic_ptr || ex_wb_pipe.instr_meta.mret_ptr)) // A CLIC interrupt or mret caused a second fetch for the pointer
+      else `uvm_error("core", "More than one instruction issued from ID to EX during single step")
+
+    a_single_step_no_irq_if :
+    assert property (@(posedge clk) disable iff (!rst_ni)
+                    (ctrl_fsm_cs == DEBUG_TAKEN) &&
+                    dcsr.step &&
+                    !ctrl_fsm.debug_mode
+                    |->
+                    (inst_taken_if == 32'd1)                                                || // Exactly one instruction went from IF to ID
+                    (inst_taken_if == 32'd0) && (ctrl_fsm.debug_cause == DBG_CAUSE_HALTREQ) || // External debug before any instruction
+                    (inst_taken_if == 32'd0) && $past(ctrl_fsm.irq_ack)                     || // Interrupt taken before any instruction
+                    (inst_taken_if == 32'd0) && $past(ctrl_pending_nmi)                     || // NMI taken before any instruction
+                    (inst_taken_if == 32'd2) && $past(ex_wb_pipe.instr_meta.clic_ptr || ex_wb_pipe.instr_meta.mret_ptr)) // A CLIC interrupt or mret caused a second fetch for the pointer
+
+      else `uvm_error("core", "More than one instruction issued from IF to ID during single step")
+
+    // Check that unused trigger bits remain zero
+    a_unused_trigger_bits:
+    assert property (@(posedge clk) disable iff (!rst_ni)
+                    1'b1
+                    |->
+                    (|if_id_pipe.trigger_match[31:DBG_NUM_TRIGGERS] == 1'b0) &&
+                    (|id_ex_pipe.trigger_match[31:DBG_NUM_TRIGGERS] == 1'b0) &&
+                    (|ex_wb_pipe.trigger_match[31:DBG_NUM_TRIGGERS] == 1'b0) &&
+                    (|lsu_wpt_match_wb[31:DBG_NUM_TRIGGERS] == 1'b0))
+      else `uvm_error("core", "Unused trigger bits are not zero")
+
+  end
+endgenerate
+endmodule

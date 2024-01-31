@@ -28,7 +28,7 @@
 
 module cv32e40s_clic_int_controller import cv32e40s_pkg::*;
 #(
-  parameter int SMCLIC_ID_WIDTH = 5
+  parameter int unsigned CLIC_ID_WIDTH = 5
 )
 (
   input  logic                       clk,
@@ -36,7 +36,7 @@ module cv32e40s_clic_int_controller import cv32e40s_pkg::*;
 
   // CLIC interface
   input  logic                       clic_irq_i,                // CLIC interrupt pending
-  input  logic [SMCLIC_ID_WIDTH-1:0] clic_irq_id_i,             // ID of pending interrupt
+  input  logic [CLIC_ID_WIDTH-1:0]   clic_irq_id_i,               // ID of pending interrupt
   input  logic [7:0]                 clic_irq_level_i,          // Level of pending interrupt
   input  logic [1:0]                 clic_irq_priv_i,           // Privilege level of pending interrupt (always machine mode) (not used)
   input  logic                       clic_irq_shv_i,            // Is pending interrupt vectored?
@@ -51,14 +51,14 @@ module cv32e40s_clic_int_controller import cv32e40s_pkg::*;
 
   // From cs_registers
   input  mstatus_t                   mstatus_i,                 // Current mstatus from CSR
-  input  logic [7:0]                 mintthresh_i,              // Current interrupt threshold from CSR
+  input  logic [7:0]                 mintthresh_th_i,           // Current interrupt threshold from CSR
   input  mintstatus_t                mintstatus_i,              // Current mintstatus from CSR
   input  mcause_t                    mcause_i,                  // Current mcause from CSR
   input  privlvl_t                   priv_lvl_i,                // Current privilege level of core
 
   // To cs_registers
   output logic                       mnxti_irq_pending_o,       // An interrupt is available to the mnxti CSR read
-  output logic [SMCLIC_ID_WIDTH-1:0] mnxti_irq_id_o,            // The id of the availble mnxti interrupt
+  output logic [CLIC_ID_WIDTH-1:0]   mnxti_irq_id_o,            // The id of the availble mnxti interrupt
   output logic [7:0]                 mnxti_irq_level_o          // Level of the available interrupt
 );
 
@@ -67,7 +67,7 @@ module cv32e40s_clic_int_controller import cv32e40s_pkg::*;
 
   // Flops for breaking timing path to instruction interface
   logic                       clic_irq_q;
-  logic [SMCLIC_ID_WIDTH-1:0] clic_irq_id_q;
+  logic [CLIC_ID_WIDTH-1:0]   clic_irq_id_q;
   logic [7:0]                 clic_irq_level_q;
   logic                       clic_irq_shv_q;
 
@@ -112,7 +112,7 @@ module cv32e40s_clic_int_controller import cv32e40s_pkg::*;
   //
   // The interrupt-level threshold is only valid when running in the associated privilege mode.
 
-  assign effective_irq_level = (mintthresh_i > mintstatus_i.mil) ? mintthresh_i : mintstatus_i.mil;
+  assign effective_irq_level = (mintthresh_th_i > mintstatus_i.mil) ? mintthresh_th_i : mintstatus_i.mil;
 
   ///////////////////////////
   // Outputs to controller //
@@ -122,6 +122,10 @@ module cv32e40s_clic_int_controller import cv32e40s_pkg::*;
   // and the incoming irq level is above the core's current effective interrupt level. Machine mode interrupts
   // during user mode shall always be taken if their level is > 0
 
+  // Cannot use flopped comparator results from the irq_wu_ctrl_o logic, as the effective_irq_level
+  // may change from one cycle to the next due to CSR updates. However, as the irq_wu_ctrl_o is only used
+  // when the core is in the SLEEP state (where no CSR updates can happen), an assertion exists to check that the cycle after a core wakes up
+  // due to an interupt the irq_req_ctrl_o must be asserted if global_irq_enable == 1;
   assign irq_req_ctrl_o = clic_irq_q && global_irq_enable &&
     ((priv_lvl_i == PRIV_LVL_M) ? (clic_irq_level_q > effective_irq_level) : (clic_irq_level_q > '0));
 
@@ -135,7 +139,6 @@ module cv32e40s_clic_int_controller import cv32e40s_pkg::*;
   // - priv mode == current, irq i is max (done in external CLIC), level > max(mintstatus.mil, mintthresh.th)
   // - priv mode  > current, irq i is max (done in external CLIC), level != 0
 
-  // todo: can we share the comparator below and flop the result for irq_req_ctrl_o?
   assign irq_wu_ctrl_o = clic_irq_i &&
     ((priv_lvl_i == PRIV_LVL_M) ? (clic_irq_level_i > effective_irq_level) : (clic_irq_level_i > '0));
 
@@ -151,15 +154,15 @@ module cv32e40s_clic_int_controller import cv32e40s_pkg::*;
   ///////////////////////////
 
   // The outputs for mnxti will only be used within cs_registers when a CSR instruction is accessing mnxti
-
+  // The mxnti path to interrupts does not take mstatus.mie or dcsr.stepie into account.
   assign mnxti_irq_pending_o = clic_irq_q &&
     (clic_irq_level_q > mcause_i.mpil) &&
-    (clic_irq_level_q > mintthresh_i)  &&
+    (clic_irq_level_q > mintthresh_th_i)  &&
     !clic_irq_shv_q;
 
   // If mnxti_irq_pending is true, the currently flopped ID and level will be sent to cs_registers
   // for use in the function pointer and CSR side effects.
-  // Using native SMCLIC_ID_WIDTH for cleaner pointer concatenation in cs_registers.
+  // Using native CLIC_ID_WIDTH for cleaner pointer concatenation in cs_registers.
 
   assign mnxti_irq_id_o    = clic_irq_id_q;
   assign mnxti_irq_level_o = clic_irq_level_q;
